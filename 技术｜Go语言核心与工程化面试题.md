@@ -1027,6 +1027,18 @@ context 泄漏通常是创建了带 cancel 的 context 但没有调用 cancel，
 - rate limiter：按 QPS 或令牌桶限制外部调用。
 - singleflight：同 key 请求合并，防止缓存击穿。
 
+Go 本地令牌桶常用 `golang.org/x/time/rate`：
+
+```go
+limiter := rate.NewLimiter(rate.Limit(60), 120) // 平均每秒 60 次，最大突发 120 次
+
+if !limiter.Allow() {
+	return ErrRateLimited
+}
+```
+
+如果需要“排队等待 token”，用 `Wait(ctx)`；如果要“立即判断是否放行”，用 `Allow()`。多实例共享额度时不要只靠本地 limiter，应使用 Redis 全局限流或网关限流。
+
 ```go
 g, ctx := errgroup.WithContext(ctx)
 g.SetLimit(20)
