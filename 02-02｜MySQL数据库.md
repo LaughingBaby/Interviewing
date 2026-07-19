@@ -1,0 +1,3439 @@
+# 技术｜MySQL 数据库面试题
+
+> 面向 9 年以上 Golang Web 后端业务岗。全文按照“定位与建模 → SQL 执行 → InnoDB 与索引 → 事务并发 → 日志恢复 → 复制高可用 → 性能容量 → 治理与 Go 工程 → 项目实战”展开。
+>
+> 核心回答采用：**结论先行 → 核心机制 → 完整流程 → 工程取舍 → 生产实践 → 面试追问**。
+
+## 一、MySQL 学习地图与资深回答框架
+
+### 1. MySQL 的知识图谱主线是什么？
+
+```text
+业务场景与数据模型
+  -> Client / Connector / Parser / Optimizer / Executor
+  -> InnoDB Page / Buffer Pool / B+Tree
+  -> Transaction / MVCC / Lock
+  -> Undo / Redo / Binlog / Crash Recovery
+  -> Replication / HA / Backup / PITR
+  -> SQL 性能 / 容量 / 分片迁移
+  -> 治理 / 安全 / Go database/sql
+  -> 业务架构与项目表达
+```
+
+**结论先行：** MySQL 面试的主线是“数据如何正确地写入、并发地访问、可靠地恢复和持续地扩展”，索引只是其中一环。
+
+### 2. 资深后端如何回答 MySQL 题？
+
+| 题型 | 回答顺序 |
+|---|---|
+| 建模 | 业务实体 → 查询/写入模式 → 约束 → 生命周期 → 扩展 |
+| SQL | 执行链路 → 扫描量 → 索引/回表/排序 → 实测 |
+| 并发 | 事务边界 → 隔离/MVCC/锁 → 幂等 → 重试补偿 |
+| 高可用 | 故障模型 → 复制一致性 → 切换 → RPO/RTO → 对账 |
+| 排障 | 影响面 → SQL/锁/连接/IO/复制证据 → 止血 → 根因 |
+
+高级岗位要从正确性开始，再谈性能；能量化容量、解释异常路径并给出回滚和恢复证据。
+
+### 关联资料与原有定位
+
+> 面向 9 年+ Golang Web 后端业务岗。
+> 回答重点：数据建模、索引、事务、锁、SQL 优化、主从复制、分库分表、线上治理和项目表达。
+
+### 补充模块：MySQL 面试思想方法论篇：先建立结构化回答框架
+
+> 本模块回答“怎么学、怎么答、怎么临场组织”。MySQL 面试不要散点背诵，要围绕数据正确性、查询性能、并发控制、容量扩展和故障恢复建立金字塔。
+
+### 补充方法：复习地图
+
+```text
+面试方法论 -> 当前能力全景 -> 核心原理 -> 实战设计 -> 线上治理 -> 项目表达
+```
+
+### 补充方法：资深后端 MySQL 金字塔学习框架
+
+> 顶层先回答“为什么选 MySQL、如何保证正确性、如何扛住增长”；底层再落到索引、事务、锁、日志和执行计划。
+
+```text
+                    业务价值层
+        数据正确性 / 查询效率 / 容量扩展 / 故障恢复
+                         │
+                    架构设计层
+      主从复制 / 读写分离 / 分库分表 / 冷热归档 / 迁移切流
+                         │
+                    工程治理层
+       表结构设计 / 索引设计 / 慢 SQL / 连接池 / 监控告警
+                         │
+                    并发一致层
+        事务 ACID / MVCC / 行锁 / gap lock / 死锁重试
+                         │
+                    存储原理层
+          B+Tree / Buffer Pool / redo / undo / binlog
+```
+
+**资深后端必须掌握的 8 个问题域：**
+
+| 问题域 | 必须会什么 | 面试高频追问 | 项目表达落点 |
+| --- | --- | --- | --- |
+| 表结构设计 | 字段类型、主键、唯一键、范式/反范式、冷热字段拆分 | 为什么不用 UUID 做主键？金额怎么存？JSON 字段能不能用？ | 投放工单、广告任务、配额流水、审计日志 |
+| 索引设计 | B+Tree、聚簇/二级索引、联合索引、覆盖索引、索引失效 | 联合索引顺序怎么定？为什么回表慢？ | 列表查询、状态筛选、报表查询、深分页 |
+| SQL 执行 | 解析、优化器、执行计划、回表、排序、临时表 | EXPLAIN 怎么看？Using filesort 一定坏吗？ | 慢 SQL 排查和上线 SQL 审核 |
+| 事务一致性 | ACID、隔离级别、MVCC、undo/redo、两阶段提交 | RR 怎么避免幻读？binlog/redo 为什么两阶段提交？ | 工单分配、库存扣减、状态流转 |
+| 锁与并发 | 行锁、gap lock、next-key lock、死锁、锁等待 | 为什么没走索引会锁很多行？死锁怎么治理？ | 并发更新、任务抢占、热点行治理 |
+| 高可用复制 | binlog、relay log、主从延迟、半同步、读写分离 | 写完读不到怎么办？主从延迟怎么处理？ | 读扩展、报表读库、关键链路读主 |
+| 容量扩展 | 分库分表、分片键、全局 ID、迁移扩容、归档 | 什么时候分表？分表后怎么查？ | 广告日志、事件流水、历史报表 |
+| 线上治理 | 慢 SQL、连接池、Online DDL、备份恢复、监控告警 | 连接池满了怎么办？大表加字段怎么做？ | 事故排查、性能优化、灰度变更 |
+
+**金字塔表达模板：**
+
+```text
+结论：我会先保证数据正确性，再优化性能和扩展性。
+第一层：数据模型是否合理，主键、唯一键、字段类型和事务边界是否清晰。
+第二层：核心查询是否有合适索引，执行计划扫描量、回表、排序是否可控。
+第三层：并发写是否通过事务、条件更新、锁、幂等和重试保证正确。
+第四层：容量增长后通过读写分离、冷热拆分、分库分表、归档和迁移治理。
+第五层：线上通过慢日志、连接池指标、锁等待、主从延迟、DDL 风险和告警闭环。
+```
+
+**一张总图：MySQL 在后端系统中的位置**
+
+```mermaid
+flowchart TD
+    A["业务请求"] --> B["服务层: 参数校验/幂等/事务边界"]
+    B --> C["MySQL: 事实数据源"]
+    C --> D["事务: ACID/MVCC/锁"]
+    C --> E["索引: B+Tree/执行计划"]
+    C --> F["日志: redo/undo/binlog"]
+    F --> G["主从复制/备份恢复/CDC"]
+    C --> H["派生读模型: Redis/ES/数仓"]
+    B --> I["MQ/Outbox: 最终一致补偿"]
+```
+
+### 补充方法：资深后端如何回答 MySQL 问题？
+
+**结论先行：**
+MySQL 面试要围绕“数据正确性、查询性能、并发控制、容量扩展、故障恢复”展开，而不是只背 SQL。
+
+**分层展开：**
+
+**基础层**
+- InnoDB、B+Tree、聚簇索引、二级索引。
+- 事务、MVCC、锁、隔离级别。
+
+**性能层**
+- SQL 执行计划。
+- 索引设计。
+- 慢 SQL 治理。
+- 分页、排序、回表、覆盖索引。
+
+**架构层**
+- 主从复制、读写分离。
+- 分库分表。
+- 冷热数据拆分。
+- 数据迁移和扩容。
+
+**工程层**
+- 连接池、超时、重试、幂等。
+- 数据一致性。
+- 监控告警和故障预案。
+
+**面试追问：数据库问题最重要的意识是什么？**
+数据正确性优先于性能优化。性能可以扩容和优化，数据错了往往只能靠补偿、修复和审计。
+
+### 补充方法：MySQL 题目通用决策框架
+
+**结论先行：**
+遇到 MySQL 题，先判断它属于哪类问题：建模、查询、并发、扩展、恢复、治理。不要一上来只回答“加索引”。
+
+```text
+题目问表设计？
+    实体关系 -> 字段类型 -> 主键/唯一键 -> 查询入口 -> 生命周期
+
+题目问查询慢？
+    慢日志 -> EXPLAIN -> 扫描行数 -> 回表/排序/临时表 -> 索引/SQL/架构优化
+
+题目问并发写？
+    事务边界 -> 条件更新 -> 锁范围 -> 幂等 -> 死锁重试 -> 补偿
+
+题目问容量增长？
+    读写分离 -> 冷热拆分 -> 分库分表 -> 全局 ID -> 迁移校验
+
+题目问线上事故？
+    先止血 -> 定位瓶颈 -> 修复 -> 复盘制度化
+```
+
+### 补充方法：MySQL 速记清单与回答模板
+
+> 本模块用于临考前快速复盘，帮助把零散知识压缩成可输出的回答。
+
+#### 模板 1：原理类题
+
+```text
+结论先行：先说这个机制解决什么问题。
+核心结构：再说依赖哪些结构，例如 B+Tree、ReadView、undo/redo、锁。
+执行过程：按步骤讲一遍链路。
+适用边界：说明它解决不了什么。
+工程案例：最后落到慢 SQL、库存扣减、状态流转、主从延迟等场景。
+```
+
+#### 模板 2：场景设计题
+
+```text
+业务目标 -> 数据模型 -> 事务边界 -> 索引设计 -> 并发控制 -> 容量扩展 -> 监控补偿
+```
+
+#### 模板 3：线上排障题
+
+```text
+先止血：限流、降级、暂停任务、切读主、摘除异常从库。
+再定位：慢日志、EXPLAIN、锁等待、连接池、主从延迟、CPU/IO。
+再修复：索引、SQL 改写、事务缩短、批量拆分、DDL 灰度。
+再复盘：SQL 审核、压测、监控、告警、容量规划。
+```
+
+#### 高频速记清单
+
+| 方向 | 必背关键词 |
+| --- | --- |
+| 表设计 | 主键短稳递增、唯一约束兜底、金额整数、冷热字段拆分 |
+| 索引 | B+Tree、聚簇索引、二级索引、回表、覆盖索引、最左前缀 |
+| SQL | EXPLAIN、rows、filtered、Using index、filesort、temporary |
+| 事务 | ACID、undo、redo、MVCC、ReadView、隔离级别 |
+| 锁 | record lock、gap lock、next-key lock、死锁、锁等待 |
+| 日志 | redo 崩溃恢复、undo 回滚/MVCC、binlog 复制/恢复、两阶段提交 |
+| 架构 | 主从复制、读写分离、主从延迟、分库分表、全局 ID |
+| 治理 | 慢 SQL、连接池、Online DDL、备份恢复、监控告警 |
+
+## 二、使用场景、数据建模与能力边界
+
+### 3. 什么数据适合放 MySQL？
+
+**结论先行：** 结构稳定、关系明确、需要事务、约束和多条件查询的核心业务数据适合 MySQL，如订单、支付单、工单、账户、权限和审计流水。
+
+不适合直接承载海量原始日志、频繁变化的任意文档结构、全文搜索和低价值超高频计数；这些可以落到日志、文档、搜索或分析系统，MySQL 保留权威状态和索引关系。
+
+### 4. 表结构设计从哪些维度开始？
+
+```text
+业务对象
+  -> 主键与业务唯一键
+  -> 查询过滤、排序、分页、Join
+  -> 并发更新和事务边界
+  -> 字段类型、Null、默认值
+  -> 索引和约束
+  -> 热冷生命周期、归档和分片
+```
+
+- 金额使用定点小数或最小货币单位整数，避免浮点误差。
+- 状态使用明确枚举和值域约束，配合状态流水审计。
+- 幂等号、外部流水号使用唯一索引兜底。
+- 高频查询字段避免藏在 JSON；JSON 适合低频扩展和原始快照。
+- 大字段和低频字段可垂直拆分，减少热页和 Buffer Pool 污染。
+
+### 5. 主键如何选择？
+
+InnoDB 主键决定聚簇索引组织，也会存入每个二级索引叶子。主键应短、稳定、非空、尽量递增且无业务可变语义。
+
+- 自增 ID：局部性好，单库简单；分布式生成和暴露趋势要考虑。
+- 雪花 ID：跨库生成快，但较长且需处理时钟回拨。
+- 号段：数据库批量分配，性能好，需高可用发号服务。
+- 随机 UUID：写入离散、索引大、页分裂多；若必须使用可考虑更紧凑、有序表示。
+
+### 6. 范式和反范式如何取舍？
+
+范式减少冗余和更新异常，适合权威关系；反范式通过冗余减少 Join、稳定查询，但增加同步和修复成本。
+
+资深设计先保留一个权威字段，再为高频读建立可重建冗余，并明确更新事件、版本、补偿和对账，不做无责任人的双写。
+
+### 7. 状态和流水为什么要分开？
+
+主表保存当前状态，流水表保存不可变变化事实，兼顾快速查询、审计、补偿和问题回放。
+
+```text
+order.current_status = paid
+order_status_log: created -> paying -> paid
+```
+
+状态更新与关键流水应在同一本地事务；非关键通知可通过 Outbox 异步派生。
+
+### 补充模块：MySQL 当前能力全景：数据建模、索引、SQL、复制、扩展与连接池
+
+> 本模块回答“MySQL 能做什么、怎么正确使用”。重点是中介总览：先知道能力边界，再进入底层原理。
+
+### 深入：数据建模与表结构设计怎么做？
+
+**结论先行：**
+表结构设计要从业务实体、查询模式、并发写入、一致性边界和数据生命周期出发。资深后端不会只看“字段够不够”，还会考虑主键、唯一约束、索引、状态机、审计、冷热拆分和未来扩展。
+
+**设计步骤：**
+
+```text
+业务对象 -> 事务边界 -> 查询入口 -> 字段类型 -> 约束索引 -> 生命周期 -> 扩展治理
+```
+
+**这五个维度具体指什么？**
+
+表结构设计不是先想字段，而是先回答五个问题：
+
+```text
+数据是什么 -> 怎么被查 -> 怎么被写 -> 哪些必须一起正确 -> 这批数据会活多久
+```
+
+| 维度 | 核心问题 | 主要影响 | 例子 |
+| --- | --- | --- | --- |
+| 业务实体 | 这张表描述哪个业务对象？对象之间是什么关系？ | 字段、主键、外键/逻辑关联、主表/明细表 | 广告账户、Campaign、AdGroup、素材、投放报表 |
+| 查询模式 | 线上最常怎么查？按什么过滤、排序、分页、聚合？ | 联合索引、覆盖索引、冗余字段、汇总表 | 按 `account_id + status` 查计划列表，并按 `updated_at` 倒序 |
+| 并发写入 | 多个请求会不会同时改同一行？写入 QPS 多高？有没有热点行？ | 行锁、乐观锁、条件更新、流水表、MQ 聚合、分片 | 并发修改预算、状态；高频更新点击数、消耗 |
+| 一致性边界 | 哪些数据必须在一个事务里一起成功？哪些允许最终一致？ | 事务范围、唯一约束、幂等表、补偿任务、Outbox/MQ | 预算变更和操作日志要一致；报表统计可延迟 |
+| 数据生命周期 | 数据什么时候产生？多久高频访问？何时变冷、归档、删除？ | 分区、分表、冷热拆分、归档、TTL、历史表 | 近 7 天报表热查，1 年前报表归档 |
+
+它们会交叉，但关注点不同：
+- 业务实体决定“表长什么样”。
+- 查询模式决定“索引怎么建”。
+- 并发写入决定“怎么避免锁冲突和热点行”。
+- 一致性边界决定“事务、约束和补偿怎么设计”。
+- 数据生命周期决定“分区、归档和清理怎么做”。
+
+**完整例子：广告计划 Campaign 表**
+
+```text
+业务实体：
+  Campaign 是广告投放的计划层级，属于某个广告账户，有名称、状态、预算、起止时间。
+
+查询模式：
+  投手经常按 account_id + status 查列表，并按 updated_at 倒序分页。
+
+并发写入：
+  预算、状态可能被多人或自动规则同时修改，需要避免并发覆盖。
+
+一致性边界：
+  修改预算时要同时写预算变更日志；状态流转要保证不能从已删除状态回到运行中。
+
+数据生命周期：
+  运行中计划高频访问；结束/删除很久的计划可以归档或减少索引维护。
+```
+
+表结构可以这样推导：
+
+```sql
+create table campaign (
+  id bigint primary key,
+  account_id bigint not null,
+  name varchar(128) not null,
+  status tinyint not null,
+  budget_cent bigint not null,
+  version int not null default 0,
+  start_time datetime,
+  end_time datetime,
+  created_at datetime not null,
+  updated_at datetime not null,
+  key idx_account_status_updated(account_id, status, updated_at)
+);
+```
+
+设计解释：
+- `id` 来自业务实体，作为短、稳、趋势递增的聚簇主键。
+- `idx_account_status_updated` 来自查询模式，支撑账户下按状态筛选和更新时间排序。
+- `version` 来自并发写入，用于乐观锁或并发覆盖检测。
+- 预算变更日志表来自一致性边界，预算修改和日志写入应放在同一事务。
+- 历史归档策略来自数据生命周期，避免历史计划长期拖累热表。
+
+**1. 先找业务实体和聚合根**
+- 订单系统：订单主表、订单明细、支付单、履约单、状态流转。
+- 广告投放：广告任务、广告账户、campaign/adgroup/ad、素材、创建日志。
+- 工单分配：工单主表、组统计、轮次状态、历史配对、分配日志。
+
+**2. 字段类型要保守**
+- 金额用整数分，不用 float/double。
+- 状态用 tinyint/smallint 或 varchar 枚举，但要统一规范。
+- 时间字段统一 `created_at`、`updated_at`，必要时加 `deleted_at`。
+- 大文本、JSON、扩展字段不要污染高频列表查询，可拆详情表。
+- 字符集、排序规则统一，避免关联时隐式转换。
+
+**3. 主键设计**
+- InnoDB 主键就是聚簇索引，叶子节点存整行。
+- 主键尽量短、稳定、趋势递增。
+- 不建议 UUID 直接做主键：长、随机、二级索引膨胀、页分裂更多。
+- 分库分表场景可用雪花 ID 或号段 ID。
+
+**4. 约束比代码判断更可靠**
+- 幂等号、业务流水号、外部平台 ID 要用唯一索引兜底。
+- 状态流转用条件更新兜底，例如 `where id=? and status='INIT'`。
+- 软删除表的唯一约束要考虑 `deleted_at` 或业务唯一键设计。
+
+**5. 宽表和拆表取舍**
+
+| 方案 | 优点 | 缺点 | 适合场景 |
+| --- | --- | --- | --- |
+| 单表 | 查询简单，事务边界清晰 | 宽字段影响缓存命中，DDL 成本高 | 中小规模、字段稳定 |
+| 主表 + 详情表 | 高频字段轻，列表查询快 | 查询详情多一次 join/查询 | 大文本、JSON、低频字段 |
+| 主表 + 流水表 | 当前状态和历史轨迹分离 | 写入链路多一步 | 状态机、审计、补偿 |
+| 冷热拆分 | 热表小，性能稳定 | 归档和查询复杂 | 历史数据很大 |
+
+**示例：广告创建任务表**
+
+```sql
+create table ad_create_task (
+  id bigint primary key,
+  request_id varchar(64) not null,
+  account_id varchar(64) not null,
+  platform varchar(32) not null,
+  status tinyint not null,
+  retry_count int not null default 0,
+  created_at datetime not null,
+  updated_at datetime not null,
+  unique key uk_request_id(request_id),
+  key idx_account_status_time(account_id, status, created_at)
+);
+```
+
+**为什么这样设计：**
+- `id` 做聚簇主键，稳定且短。
+- `request_id` 唯一索引防重复提交。
+- `account_id + status + created_at` 支撑运营列表和定时任务扫描。
+- 状态流转通过条件更新保证并发安全。
+
+**面试追问：JSON 字段能不能用？**
+可以用，但要克制。JSON 适合低频扩展属性、配置快照、第三方原始 payload；不适合作为高频过滤、排序、关联字段。核心查询条件应拆成普通列并建索引。
+
+## 三、SQL 执行链路、优化器与执行计划
+
+### 8. 一条 SQL 如何从客户端执行到 InnoDB？
+
+```text
+Go database/sql
+  -> 连接/认证/会话
+  -> Parser：词法、语法和语义检查
+  -> Optimizer：统计信息、索引、Join 顺序和成本
+  -> Executor：驱动执行计划
+  -> InnoDB：Buffer Pool、索引、MVCC、锁和日志
+  -> 返回结果
+```
+
+**工程判断：** SQL 慢可能发生在连接池等待、锁等待、优化器选错计划、存储 IO、结果传输或客户端处理，不能只看语句执行时间。
+
+### 9. 优化器如何选择执行计划？
+
+优化器根据统计信息、基数、选择性、访问成本、Join 顺序、排序和临时表成本选择计划。它做成本估算，不保证每次都选到真实最优方案。
+
+数据分布突变、统计信息失真、参数差异和大量回表都可能导致计划变化。修复应先用真实参数和 `EXPLAIN ANALYZE`/执行证据验证，再考虑更新统计、索引重构、SQL 改写或谨慎 Hint。
+
+### 10. EXPLAIN 应该怎么看？
+
+顺序建议：表和 Join 顺序 → `type` → `key/key_len` → `rows/filtered` → `Extra`。
+
+| 信号 | 判断 |
+|---|---|
+| `const/eq_ref/ref/range` | 通常比全扫描好，但仍看返回比例 |
+| `index` | 可能扫描整棵索引，不等于高效 |
+| `ALL` | 大表危险，小表未必有问题 |
+| `Using index` | 覆盖索引，减少回表 |
+| `Using filesort` | 额外排序，不一定落盘但需看规模 |
+| `Using temporary` | 中间结果，聚合/排序可能放大成本 |
+
+估算行数必须结合实际执行时间、扫描行、返回行、锁等待和数据分布。
+
+### 11. 为什么深分页慢？
+
+`LIMIT offset,size` 通常需要扫描并丢弃前面记录，Offset 越大浪费越多。可使用 Seek 分页：以上一页最后的稳定排序键继续查询。
+
+```sql
+SELECT id, status, created_at
+FROM orders
+WHERE tenant_id = ?
+  AND (created_at, id) < (?, ?)
+ORDER BY created_at DESC, id DESC
+LIMIT 50;
+```
+
+排序字段要稳定且有匹配联合索引；后台任意跳页和用户连续翻页是不同需求。
+
+### 12. Join、子查询和大结果集如何优化？
+
+- 先缩小驱动集，让被驱动表 Join Key 有索引。
+- 避免循环查询形成 N+1，使用批量查询或合理 Join。
+- 大结果流式读取并设置超时，不一次加载到 Go 内存。
+- 聚合报表可预聚合、异步化或使用分析系统。
+- 关注临时表、排序、回表和网络传输，而非机械拒绝 Join。
+
+### 深入：一条 SQL 从客户端到 InnoDB 怎么执行？
+
+面试速记
+连接器负责建立连接、认证、权限和会话管理；解析器负责词法分析、语法分析和语义检查，判断 SQL 写得是否正确；优化器根据统计信息和成本模型选择索引、JOIN 顺序和执行计划；执行器按照执行计划驱动存储引擎执行，并负责过滤、排序、聚合和结果返回；InnoDB 负责底层数据、索引、事务、锁和日志。
+
+**结论先行：**
+SQL 执行不是“发给数据库就结束”，它会经过连接层、解析器、优化器、执行器、存储引擎，最后落到 Buffer Pool、索引页和日志系统。
+
+```mermaid
+sequenceDiagram
+    participant AppNode as Go 服务
+    participant ConnNode as MySQL 连接层
+    participant ParserNode as 解析器
+    participant OptimizerNode as 优化器
+    participant ExecutorNode as 执行器
+    participant InnoDBNode as InnoDB
+    participant BufferPoolNode as Buffer Pool
+    participant LogNode as redo/undo/binlog
+
+    AppNode->>ConnNode: SQL + 参数
+    ConnNode->>ParserNode: 词法/语法解析
+    ParserNode->>OptimizerNode: 生成候选执行计划
+    OptimizerNode->>ExecutorNode: 选择索引和 join 顺序
+    ExecutorNode->>InnoDBNode: 按执行计划读取/修改
+    InnoDBNode->>BufferPoolNode: 访问数据页/索引页
+    InnoDBNode->>LogNode: 写 undo/redo
+    ExecutorNode->>LogNode: 提交阶段写 binlog
+    ExecutorNode-->>AppNode: 返回结果
+```
+
+**查询链路重点：**
+- 优化器根据统计信息、索引、条件选择执行计划。
+- `EXPLAIN` 看到的是优化器选择的计划，不是业务“以为”的计划。
+- 回表、排序、临时表、扫描行数决定查询是否稳定。
+
+**更新链路重点：**
+- 先写 undo，支持回滚和 MVCC。
+- 修改 Buffer Pool 中的数据页。
+- 写 redo，保证崩溃恢复。
+- 提交时协调 redo 和 binlog，保证复制和恢复一致。
+
+**面试追问：为什么同一条 SQL 有时突然变慢？**
+可能是执行计划变化、统计信息不准、数据分布倾斜、Buffer Pool 未命中、锁等待、主从延迟、连接池排队、磁盘 IO 抖动或临时表变大。资深排查不能只盯索引。
+
+## 四、InnoDB 存储、Buffer Pool 与索引
+
+### 13. InnoDB 如何组织数据？
+
+InnoDB 以 Page 为基本读写单位，页组成区和表空间；记录按聚簇 B+Tree 组织。内存通过 Buffer Pool 缓存数据页、索引页和辅助结构。
+
+读取先查 Buffer Pool，未命中再从磁盘加载；更新先修改内存页并生成 Redo，脏页由后台刷盘。这是性能与崩溃恢复的基础。
+
+### 14. Buffer Pool 如何工作？
+
+- 缓存数据页和索引页，降低随机 IO。
+- 使用 LRU 类策略并区分新老区域，降低全表扫描污染。
+- 脏页异步刷盘，Checkpoint 推进 Redo 可回收位置。
+- Change Buffer 等机制可减少部分非唯一二级索引随机写。
+
+Buffer Pool 不能占满机器内存，还要为连接、排序、OS、备份和监控留空间。命中率下降要结合数据增长、扫描、脏页和磁盘延迟分析。
+
+### 15. 为什么 InnoDB 使用 B+Tree？
+
+B+Tree 分支多、树高低，节点与数据库页匹配，叶子有序链表适合范围查询；相比二叉树可用更少磁盘随机 IO 定位更多 Key。
+
+哈希适合等值但不自然支持范围和排序；红黑树分支少、树高更高。选择 B+Tree 是磁盘页、范围查询和综合负载的工程权衡。
+
+### 16. 聚簇索引和二级索引有什么区别？
+
+- 聚簇索引叶子保存完整行，一张表只有一种物理聚簇组织。
+- 二级索引叶子保存索引列和主键。
+- 二级索引查非覆盖字段需要回主键树，称为回表。
+- 主键越长，每个二级索引越大。
+
+覆盖索引减少回表，但索引越宽写放大和空间成本越高，不能为每条 SQL 都堆覆盖索引。
+
+### 17. 联合索引如何设计？
+
+根据等值过滤、范围、排序和返回列设计，而不是简单按“区分度最高放最左”。
+
+```text
+等值租户/账号
+  -> 等值状态
+  -> 范围时间
+  -> 稳定排序 ID
+  -> 必要覆盖列
+```
+
+索引 `(tenant_id,status,created_at,id)` 可服务租户状态列表与 Seek 分页。范围列之后的列通常难以继续缩小扫描范围，但仍可能用于索引下推或覆盖。
+
+### 18. 索引为什么会失效或不被选择？
+
+- 对列做函数、表达式或隐式类型转换。
+- 前导模糊匹配。
+- 跳过联合索引最左部分。
+- `OR` 一侧无法有效索引。
+- 选择性差、返回比例高，优化器认为全扫描更便宜。
+- 数据分布和统计信息与实际不符。
+
+最终以执行计划和真实耗时为准，“用了索引”不等于快。
+
+### 19. 页分裂和索引写放大如何产生？
+
+随机主键或索引中间插入可能让目标页空间不足，发生页分裂和更多随机 IO；每次写还需维护所有相关二级索引并生成日志。
+
+治理包括使用有序短主键、减少低价值索引、批量写、控制事务规模和监控页/索引增长。删除大量数据后文件不一定自动缩小，空间回收需单独规划。
+
+### 深入：为什么 MySQL InnoDB 用 B+Tree 做索引？
+
+**结论先行：**
+InnoDB 使用 B+Tree 是因为它适合磁盘 IO 场景，树高低、范围查询友好、节点可存多个 key，综合性能稳定。
+
+**分层展开：**
+
+**磁盘友好**
+- B+Tree 每个节点可存多个 key。
+- 树高通常较低。
+- 一次页读取能加载多个索引项。
+
+**范围查询友好**
+- 叶子节点按 key 有序。
+- 叶子节点之间有链表。
+- 范围扫描比哈希索引更自然。
+
+**稳定性**
+- 查询、插入、删除复杂度稳定。
+- 适合 OLTP 常见等值和范围查询。
+
+**面试追问：为什么不用红黑树？**
+红黑树每个节点通常只存一个 key，树高更高，磁盘随机 IO 更多，不适合数据库页存储模型。
+
+### 深入：聚簇索引和二级索引有什么区别？
+
+**结论先行：**
+聚簇索引的叶子节点存整行数据，二级索引的叶子节点存主键值；通过二级索引查非覆盖字段通常需要回表。
+
+**分层展开：**
+
+**为什么 InnoDB 主键索引又叫聚簇索引？**
+
+因为 InnoDB 的主键索引叶子节点存的不是“数据地址”，而是整行数据本身。也就是说，索引和数据行聚在同一棵 B+Tree 上，所以叫聚簇索引。
+
+```text
+InnoDB 主键索引 B+Tree
+
+          [id=10 | id=20 | id=30]
+                 /      \
+                /        \
+        [id=1, id=5]   [id=20, id=30]
+
+叶子节点：
+[id=1  -> 整行数据]
+[id=5  -> 整行数据]
+[id=20 -> 整行数据]
+[id=30 -> 整行数据]
+```
+
+所以可以记住一句话：
+
+```text
+主键索引的叶子节点 = 数据页
+```
+
+通过主键查询时：
+
+```sql
+select * from user where id = 100;
+```
+
+执行路径是：
+
+```text
+沿主键 B+Tree 查到 id=100 的叶子节点 -> 直接拿到整行数据
+```
+
+二级索引不一样：
+
+```text
+二级索引 idx_name
+
+叶子节点：
+[name='Tom'   -> 主键 id=100]
+[name='Jerry' -> 主键 id=200]
+```
+
+如果执行：
+
+```sql
+select * from user where name = 'Tom';
+```
+
+执行路径是：
+
+```text
+先查 idx_name 找到 id=100
+再用 id=100 回到主键索引查整行数据
+```
+
+第二步就是回表。
+
+**聚簇索引**
+- InnoDB 表数据按主键组织。
+- 主键索引叶子节点就是完整行。
+- 一张表只能有一个聚簇索引。
+
+**二级索引**
+- 叶子节点保存索引列和主键。
+- 查到主键后再回聚簇索引查整行。
+- 覆盖索引可以避免回表。
+
+**工程建议**
+- 主键尽量短、稳定、递增。
+- 二级索引不要过多。
+- 高价值查询尽量设计覆盖索引。
+
+**面试加分点**
+- 一张 InnoDB 表只能有一个聚簇索引，因为数据行只能按照一种顺序组织。
+- 如果表有主键，InnoDB 用主键作为聚簇索引。
+- 如果没有主键，InnoDB 会选择第一个非空唯一索引。
+- 如果连非空唯一索引也没有，InnoDB 会生成隐藏的 `row_id` 作为聚簇索引。
+
+**面试追问：为什么不建议用很长字符串做主键？**
+主键会出现在所有二级索引叶子节点中，太长会放大索引空间、降低缓存命中率和查询性能。
+
+### 深入：什么是最左前缀原则？
+
+**结论先行：**
+联合索引按字段顺序组织，查询必须从最左列开始连续匹配，才能充分利用索引。
+
+**分层展开：**
+
+**基本规则**
+- 索引 `(a,b,c)` 可用于 `a`、`a,b`、`a,b,c`。
+- 如果缺少 `a`，通常无法有效使用该联合索引。
+- 范围查询后的列通常不能继续用于有序定位。
+
+**设计原则**
+- 区分度高、过滤能力强的字段靠前。
+- 等值条件字段通常放在范围字段前。
+- 结合排序和覆盖索引设计。
+
+**常见误区**
+- 不是字段出现在 where 就一定用索引。
+- 函数、隐式转换、前导模糊匹配可能导致索引失效。
+
+**面试追问：联合索引顺序怎么定？**
+要结合查询模式、过滤性、排序需求和覆盖需求。没有脱离业务 SQL 的固定答案。
+
+### 深入：什么情况下索引会失效？
+
+**结论先行：**
+索引失效通常是因为查询条件破坏了索引有序性、类型不匹配、选择性太差或优化器认为全表扫描更划算。
+
+**分层展开：**
+
+**常见原因**
+- 对索引列使用函数或表达式。
+- 隐式类型转换。
+- `like '%abc'` 前导模糊。
+- 联合索引不满足最左前缀。
+- `or` 条件部分字段无索引。
+- 选择性太低。
+
+**排查方式**
+- `EXPLAIN` 看 type、key、rows、Extra。
+- 对比实际扫描行数。
+- 分析索引基数和数据分布。
+
+**治理建议**
+- 改写 SQL。
+- 增加合适联合索引。
+- 避免隐式转换。
+- 大表避免函数包列，改为冗余字段或计算列。
+
+**面试追问：用了索引一定快吗？**
+不一定。低选择性索引、大量回表、排序临时表、随机 IO 都可能让索引查询很慢。
+
+### 深入：`IN`、`NOT IN`、`AND`、`OR` 都能使用索引吗？
+
+**结论先行：**
+
+这些运算符都可能使用索引，但没有“出现某个运算符就一定走索引”的规则。最终要结合索引结构、条件选择性、数据分布和 `EXPLAIN` 判断。
+
+**`IN` 通常可以使用索引**
+
+```sql
+select *
+from ad_task
+where status in (1, 2, 3);
+```
+
+有 `index(status)` 时，MySQL 通常会把它看成多个等值查找或多个范围查找，常见执行类型是 `range`。
+
+对于联合索引：
+
+```sql
+index(account_id, status, created_at)
+```
+
+下面的条件通常可以使用 `account_id + status`：
+
+```sql
+where account_id = ?
+  and status in (1, 2, 3)
+```
+
+但 `IN` 可能产生多个索引范围。例如：
+
+```sql
+where account_id = ?
+  and status in (1, 2, 3)
+  and created_at >= ?
+order by created_at desc
+```
+
+可以理解为：
+
+```text
+(account_id=?, status=1, created_at>=?)
+(account_id=?, status=2, created_at>=?)
+(account_id=?, status=3, created_at>=?)
+```
+
+这些分支分别有序，但合并后不一定满足 `created_at` 的全局倒序，因此仍可能出现 `Using filesort`。如果 `status` 只有这三个值且查询包含全部状态，`status` 的过滤价值也很低，常需要评估 `(account_id, created_at)` 是否更贴合查询目标。
+
+**`NOT IN` 可能使用索引，但通常不如 `IN`**
+
+```sql
+where status not in (1, 2)
+```
+
+它可以被理解为多个范围：
+
+```text
+status < 1 or status > 2
+```
+
+但 `NOT IN` 往往匹配大量数据，选择性较差，优化器可能认为全表扫描成本更低。因此不能简单说 `NOT IN` 一定不走索引，必须看实际执行计划。
+
+还要注意 `NULL` 语义：
+
+```sql
+status not in (1, 2)
+```
+
+不会把 `status is null` 的记录当作满足条件的数据。如果业务要求包含 `NULL`，需要显式写出：
+
+```sql
+where status not in (1, 2)
+   or status is null
+```
+
+**`AND` 最适合通过联合索引优化**
+
+```sql
+where account_id = ?
+  and status = ?
+  and created_at >= ?
+```
+
+索引：
+
+```sql
+index(account_id, status, created_at)
+```
+
+可以沿着下面的路径查找：
+
+```text
+account_id 等值
+    -> status 等值
+        -> created_at 范围
+```
+
+但 `AND` 中的每个字段不一定都能完整使用索引。例如索引仍为 `(account_id, status, created_at)`，查询改成：
+
+```sql
+where account_id = ?
+  and created_at >= ?
+```
+
+由于跳过了中间列 `status`，通常只能充分利用 `account_id`；`created_at` 可能通过索引下推或回表后过滤，不能把 `AND` 理解成“每个字段都会独立命中一个索引”。
+
+**`OR` 有可能使用索引，但更容易退化**
+
+同一个字段的条件：
+
+```sql
+where status = 1 or status = 2
+```
+
+通常可以改写为：
+
+```sql
+where status in (1, 2)
+```
+
+不同字段的条件：
+
+```sql
+where account_id = ?
+   or campaign_id = ?
+```
+
+如果两个字段各自都有索引，MySQL 可能使用 `index_merge`，分别扫描两个索引后再合并结果：
+
+```text
+扫描 idx_account_id
+扫描 idx_campaign_id
+合并索引结果
+回表读取数据
+```
+
+但 `index_merge` 不一定比联合索引或查询改写更快。如果 `OR` 的某一侧无法有效使用索引，例如：
+
+```sql
+where account_id = ?
+   or name like '%abc'
+```
+
+为了保证结果完整，MySQL 可能直接选择全表扫描。
+
+**`OR` 拆成 `UNION ALL` 后能否使用多个索引？**
+
+可以。`UNION ALL` 的每个子查询会独立优化，因此不同分支可以使用不同索引：
+
+```sql
+select *
+from user
+where user_id = ?
+
+union all
+
+select *
+from user
+where phone = ?;
+```
+
+可能的执行路径是：
+
+```text
+第一个分支 -> idx_user_id
+第二个分支 -> uk_phone
+```
+
+但 `UNION ALL` 不会自动去重。如果一条记录同时满足两个分支，结果会返回两次。可以改用 `UNION` 去重，但会引入额外的去重成本；或者在第二个分支增加排除条件。
+
+如果最终还要全局排序和分页：
+
+```sql
+select ... where account_id = ?
+union all
+select ... where campaign_id = ?
+order by created_at desc
+limit 20;
+```
+
+两个分支即使都走索引，合并后仍可能需要全局排序。是否改写，要通过 `EXPLAIN` 和实际耗时验证，不能机械认为 `UNION ALL` 一定更快。
+
+**一个 SQL 一次最多只能命中一个索引吗？**
+
+不准确。应该区分“同一张表的一次访问”和“整条 SQL”：
+
+| 场景 | 是否可能使用多个索引 | 说明 |
+| --- | --- | --- |
+| 单表普通查询 | 通常一个主要访问索引 | 多个条件通常通过一个联合索引解决 |
+| 多表 `JOIN` | 可以 | 每张表可以使用自己的索引 |
+| `UNION ALL` | 可以 | 每个分支可以使用不同索引 |
+| `OR` / `AND` | 可能 | 可能出现 `index_merge`，如 `Using union`、`Using intersect` |
+| 子查询、派生表 | 可以 | 不同查询阶段可以选择不同索引 |
+
+例如：
+
+```sql
+select *
+from orders o
+join users u on o.user_id = u.id
+where o.account_id = ?
+  and u.status = 1;
+```
+
+可能是：
+
+```text
+orders 表 -> idx_account_id
+users 表  -> idx_status 或 PRIMARY
+```
+
+而下面的普通单表查询：
+
+```sql
+where account_id = ?
+  and status = ?
+  and created_at >= ?
+```
+
+通常更希望使用一个合理的联合索引：
+
+```sql
+index(account_id, status, created_at)
+```
+
+而不是分别依赖三个单列索引。最终以 `EXPLAIN` 中的 `type`、`key`、`rows`、`Extra`，以及真实压测和线上耗时为准。
+
+### 深入：EXPLAIN 执行计划必须怎么看？
+
+**结论先行：**
+EXPLAIN 不是背字段，而是判断 SQL 是否走对索引、扫描量是否可控、是否发生大量回表、额外排序和临时表。资深后端看 EXPLAIN 的顺序是：先看访问类型 `type`，再看命中的索引 `key/key_len`，再看扫描量 `rows/filtered`，最后看 `Extra` 里的回表、排序、临时表和索引下推。
+
+**核心字段：**
+
+- `type`：访问类型，常见从好到差是 `const`、`eq_ref`、`ref`、`range`、`index`、`ALL`。
+- `possible_keys`：优化器认为可能使用的索引。
+- `key`：最终使用的索引。
+- `key_len`：实际使用索引长度，可辅助判断联合索引用到几列。
+- `rows`：预估扫描行数。
+- `filtered`：过滤后剩余比例。
+- `Extra`：额外执行信息，最能暴露风险。
+
+**type 不同取值怎么理解**
+
+| type | 含义 | 常见 SQL 场景 | 性能判断 |
+| --- | --- | --- | --- |
+| `system` | 表只有一行，是 `const` 的特殊情况 | 系统表或极小表 | 极少见，性能最好 |
+| `const` | 通过主键或唯一索引等值查询，最多命中一行 | `where id = ?`、`where uk_order_no = ?` | 很好，通常是单行定位 |
+| `eq_ref` | join 中，被驱动表通过主键/唯一索引等值匹配，每次最多一行 | 订单表 join 用户表 `on user.id = order.user_id` | 很好，join 中最理想之一 |
+| `ref` | 使用非唯一索引等值查询，可能匹配多行 | `where account_id = ?`、`where status = ?` | 通常不错，但要看 rows |
+| `range` | 使用索引范围扫描 | `where created_at >= ?`、`between`、`in` | 可接受，但范围越大越慢 |
+| `index` | 扫描整棵索引树 | 覆盖索引全扫描、无 where 但只读索引列 | 比全表小，但仍可能很重 |
+| `ALL` | 全表扫描 | 无索引、索引失效、优化器认为全表更划算 | 大表危险，小表不一定有问题 |
+
+**容易误解的点**
+- `type=ref` 不一定快，如果 `rows` 很大，仍然可能扫描大量数据。
+- `type=index` 不是“用了好索引”，它可能是在扫整个索引。
+- `type=ALL` 不一定永远错，小表或返回大比例数据时全表扫描可能合理。
+- 判断好坏不能只看 `type`，还要看 `rows`、`filtered`、`Extra` 和实际业务 QPS。
+
+**Extra 高频判断：**
+
+- `Using index`：覆盖索引，不需要回表，通常较好。
+- `Using where`：server 层仍需过滤。
+- `Using filesort`：需要额外排序，不一定落盘，但大数据量危险。
+- `Using temporary`：使用临时表，常见于 group by/order by，需重点关注。
+- `Using index condition`：索引下推 ICP，先在存储引擎层过滤部分条件。
+
+**经典案例 1：主键/唯一键查询，`type=const`**
+
+SQL：
+
+```sql
+explain
+select id, order_no, status
+from orders
+where order_no = 'NO202607130001';
+```
+
+索引：
+
+```sql
+unique key uk_order_no(order_no)
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | Extra |
+| --- | --- | --- | --- |
+| const | uk_order_no | 1 |  |
+
+分析：
+- `order_no` 是唯一索引，等值查询最多返回一行。
+- `type=const` 表示优化器可以把这条记录当成常量处理。
+- 这种查询通常没有优化空间，重点是保证字段类型一致、索引存在。
+
+优化建议：
+- 业务幂等号、订单号、支付流水号适合唯一索引。
+- 不要对唯一索引列做函数或隐式转换，否则可能从 `const` 退化。
+
+**经典案例 2：普通二级索引等值查询，`type=ref`，但 rows 很大**
+
+SQL：
+
+```sql
+explain
+select id, account_id, status, created_at
+from ad_task
+where status = 1;
+```
+
+索引：
+
+```sql
+key idx_status(status)
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | filtered | Extra |
+| --- | --- | --- | --- | --- |
+| ref | idx_status | 500000 | 100.00 | Using where |
+
+分析：
+- `type=ref` 说明用了普通二级索引等值查询。
+- 但 `status` 区分度低，`rows` 预估 50 万，扫描量仍然很大。
+- 如果还要回表读取多个字段，随机 IO 成本会很高。
+
+优化建议：
+- 不要单独迷信低区分度字段索引。
+- 结合业务查询增加联合索引，例如：
+
+```sql
+key idx_account_status_time(account_id, status, created_at)
+```
+
+- 如果是后台扫描任务，增加时间范围、分页游标或分批处理。
+
+**经典案例 3：联合索引只用到一部分，`key_len` 暴露问题**
+
+SQL：
+
+```sql
+explain
+select id, status, created_at
+from ad_task
+where account_id = ?
+  and created_at >= ?
+order by created_at desc
+limit 20;
+```
+
+已有索引：
+
+```sql
+key idx_account_status_time(account_id, status, created_at)
+```
+
+典型 EXPLAIN：
+
+| type | key | key_len | rows | Extra |
+| --- | --- | --- | --- | --- |
+| ref | idx_account_status_time | account_id长度 | 10000 | Using where; Using filesort |
+
+分析：
+- 联合索引是 `(account_id, status, created_at)`。
+- SQL 缺少 `status` 条件，所以 `created_at` 不能充分接上索引顺序。
+- `key_len` 只能看到使用到了 `account_id` 这一段。
+- `order by created_at` 可能无法直接利用索引顺序，出现 `Using filesort`。
+
+优化建议：
+- 如果这个查询高频，可以新增更贴合的索引：
+
+```sql
+key idx_account_time(account_id, created_at)
+```
+
+- 如果业务允许，补充 `status` 条件，让原联合索引完整发挥作用。
+- 一个联合索引服务一类核心查询，不要幻想一个索引覆盖所有查询。
+
+**变体：`status in (1, 2, 3)` 是否等于补齐了中间列？**
+
+如果业务里 `status` 只有 `1、2、3` 三种取值，SQL 改成：
+
+```sql
+explain
+select id, status, created_at
+from ad_task
+where account_id = ?
+  and status in (1, 2, 3)
+  and created_at >= ?
+order by created_at desc
+limit 20;
+```
+
+索引仍然是：
+
+```sql
+key idx_account_status_time(account_id, status, created_at)
+```
+
+典型 EXPLAIN 可能变成：
+
+| type | key | key_len | rows | Extra |
+| --- | --- | --- | --- | --- |
+| range | idx_account_status_time | account_id + status + created_at 长度 | 取决于数据量 | Using where; Using index; Using filesort |
+
+分析：
+- `status in (1,2,3)` 在业务上等于“所有状态”，但 MySQL 仍会把它当作多个范围条件。
+- 访问路径类似拆成三段：
+
+```text
+(account_id=?, status=1, created_at>=?)
+(account_id=?, status=2, created_at>=?)
+(account_id=?, status=3, created_at>=?)
+```
+
+- 因此 `key_len` 可能显示用到了 `account_id + status + created_at`。
+- 但索引顺序是 `(account_id, status, created_at)`，结果天然是先按 `status` 分组，再在每个 `status` 里按 `created_at` 有序。
+- 如果业务要的是所有状态混在一起后按 `created_at desc` 取最新 20 条，MySQL 通常仍需要 `Using filesort` 做全局排序。
+
+记忆点：
+
+```text
+IN 补齐中间列，不等于能消除排序。
+多值 IN 会让结果分成多段有序，但整体不一定按 order by 字段全局有序。
+```
+
+如果这个查询是高频核心查询，更匹配的索引仍然是：
+
+```sql
+key idx_account_time(account_id, created_at)
+```
+
+因为它可以直接服务：
+
+```text
+account_id = ? 后，按 created_at desc 扫描最新数据
+```
+
+**经典案例 4：范围查询后排序，可能出现 `Using filesort`**
+
+SQL：
+
+```sql
+explain
+select id, account_id, status, created_at
+from ad_task
+where account_id = ?
+  and status in (1, 2, 3)
+  and created_at >= '2026-07-01'
+order by updated_at desc
+limit 20;
+```
+
+已有索引：
+
+```sql
+key idx_account_status_created(account_id, status, created_at)
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | Extra |
+| --- | --- | --- | --- |
+| range | idx_account_status_created | 30000 | Using index condition; Using filesort |
+
+分析：
+- where 能用到部分联合索引，`type=range`。
+- 但排序字段是 `updated_at`，不在当前索引顺序里。
+- MySQL 需要把符合条件的数据再额外排序，所以出现 `Using filesort`。
+
+优化建议：
+- 如果排序固定是 `updated_at desc`，考虑新建符合查询和排序的联合索引：
+
+```sql
+key idx_account_status_updated(account_id, status, updated_at)
+```
+
+- 如果范围条件返回数据很多，优先减少候选集，再考虑排序索引。
+- `Using filesort` 不一定错，但大 rows + filesort 是风险组合。
+
+**经典案例 5：隐式转换或函数包列导致索引失效，`type=ALL`**
+
+SQL：
+
+```sql
+explain
+select id, phone
+from user
+where phone = 13800138000;
+```
+
+字段和索引：
+
+```sql
+phone varchar(20)
+key idx_phone(phone)
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | Extra |
+| --- | --- | --- | --- |
+| ALL | NULL | 1000000 | Using where |
+
+分析：
+- `phone` 是字符串，但 SQL 传入数字。
+- MySQL 可能发生隐式类型转换，导致无法按字符串索引有序查找。
+- 类似地，`where date(created_at) = '2026-07-13'` 这种函数包列也可能导致索引失效。
+
+优化建议：
+
+```sql
+where phone = '13800138000'
+```
+
+或把函数条件改写成范围：
+
+```sql
+where created_at >= '2026-07-13 00:00:00'
+  and created_at <  '2026-07-14 00:00:00'
+```
+
+**经典案例 6：覆盖索引优化，`Extra=Using index`**
+
+SQL：
+
+```sql
+explain
+select id, status, created_at
+from ad_task
+where account_id = ?
+  and status = ?
+order by created_at desc
+limit 20;
+```
+
+索引：
+
+```sql
+key idx_account_status_time(account_id, status, created_at, id)
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | Extra |
+| --- | --- | --- | --- |
+| ref | idx_account_status_time | 200 | Using where; Using index |
+
+分析：
+- where 和 order by 都能利用联合索引。
+- 查询返回字段都在索引里，`Using index` 表示覆盖索引。
+- 不需要回表读取完整行，列表页性能更稳定。
+
+优化建议：
+- 高频列表查询可设计覆盖索引，但不要无限把字段塞进索引。
+- 覆盖索引适合返回字段少、查询频率高、延迟敏感的场景。
+
+**经典案例 7：深分页，type 看起来不差但仍然慢**
+
+SQL：
+
+```sql
+explain
+select id, title, created_at
+from article
+where account_id = ?
+order by created_at desc
+limit 100000, 20;
+```
+
+典型 EXPLAIN：
+
+| type | key | rows | Extra |
+| --- | --- | --- | --- |
+| ref | idx_account_time | 100020 | Using where |
+
+分析：
+- `type=ref` 并不差。
+- 但 `limit 100000, 20` 需要扫描并丢弃前 100000 行。
+- 如果查询字段不覆盖索引，还可能产生大量回表。
+
+优化建议：
+- 改成游标分页/seek pagination：
+
+```sql
+select id, title, created_at
+from article
+where account_id = ?
+  and created_at < ?
+order by created_at desc
+limit 20;
+```
+
+- 索引设计：
+
+```sql
+key idx_account_time(account_id, created_at, id)
+```
+
+**EXPLAIN 分析模板**
+
+```text
+1. 看 type：是 const/ref/range，还是 index/ALL？
+2. 看 key：是否命中预期索引？
+3. 看 key_len：联合索引用到了几列？
+4. 看 rows + filtered：扫描量是否可控？
+5. 看 Extra：是否有 Using filesort、Using temporary、大量回表？
+6. 结合业务：SQL 频率、表数据量、返回比例、写入成本和是否需要新索引。
+```
+
+**面试表达：**
+我看执行计划会先看 `type` 和 `key` 判断是否命中预期索引，再看 `key_len` 判断联合索引用到几列，再看 `rows` 和 `filtered` 判断扫描代价，最后看 `Extra` 是否有 filesort、temporary、回表和索引下推。优化不是看到 `ALL` 就机械加索引，也不是看到 `ref` 就认为没问题，而是结合数据分布、查询频率、返回行数和写入成本一起判断。
+
+### 深入：联合索引高级设计怎么答？
+
+**核心原则：**
+
+- 等值条件优先，范围条件靠后。
+- 高频过滤字段优先于低频字段。
+- 排序字段尽量接在等值条件之后，减少 filesort。
+- 需要返回的少量字段可放入联合索引形成覆盖索引。
+- 一个索引尽量服务一类核心查询，不要幻想一个超长索引覆盖所有场景。
+
+**典型例子：**
+
+查询：
+
+```sql
+select id, status, created_at
+from ad_task
+where account_id = ?
+  and status = ?
+  and created_at >= ?
+order by created_at desc
+limit 20;
+```
+
+可考虑索引：
+
+```sql
+idx_account_status_time(account_id, status, created_at)
+```
+
+原因：
+
+- `account_id`、`status` 是等值过滤。
+- `created_at` 是范围和排序字段。
+- 返回字段少时可以补充覆盖索引字段，减少回表。
+
+**面试追问：低区分度字段能不能建索引？**
+单独建通常价值不高，例如 status 只有几个值。但它放在联合索引中，配合租户、账户、时间等字段，仍可能很有价值。
+
+### 补充模块：核心能力原理分析：InnoDB、事务、MVCC、锁、日志与复制一致性
+
+> 本模块回答“为什么 MySQL 能保证事务、并发和恢复”。复杂原理要结合图例、执行链路和生产问题理解。
+
+### 深入：InnoDB 存储结构与 Buffer Pool 怎么理解？
+
+**结论先行：**
+InnoDB 不是每次都直接读写磁盘记录，而是以页为单位管理数据，通过 Buffer Pool 缓存数据页和索引页；更新时先改内存页并写 redo log，再由后台线程把脏页刷盘。这是 MySQL 性能和崩溃恢复的基础。
+
+**分层展开：**
+
+**1. 存储层级**
+
+```text
+表空间 tablespace
+  └── 段 segment
+       └── 区 extent
+            └── 页 page，默认 16KB
+                 └── 行 record
+```
+
+需要掌握的概念：
+- 数据页：存放真实行记录。
+- 索引页：存放 B+Tree 节点。
+- Buffer Pool：InnoDB 的核心内存缓存。
+- 脏页：内存中被修改但还没刷到磁盘的页。
+- Free List：空闲页链表。
+- Flush List：需要刷盘的脏页链表。
+- LRU List：缓存淘汰链表，避免内存无限增长。
+
+**2. 为什么修改数据不是立即改磁盘**
+
+```text
+读取数据页到 Buffer Pool
+        │
+        ▼
+修改内存中的数据页
+        │
+        ▼
+数据页变成脏页
+        │
+        ▼
+先写 redo log
+        │
+        ▼
+事务提交
+        │
+        ▼
+后台线程择机把脏页刷盘
+```
+
+核心思想是 WAL，也就是 Write-Ahead Logging：先顺序写日志保证可恢复，再异步写随机数据页。这样既提升性能，又能在宕机后通过 redo log 恢复已提交事务。
+
+**3. Buffer Pool 面试必须会讲什么**
+- Buffer Pool 命中率越高，越少访问磁盘。
+- 大查询和全表扫描可能把热点页挤出去，造成缓存污染。
+- 脏页太多时刷盘压力上升，可能导致延迟抖动。
+- Buffer Pool 不是越大越好，不能占满机器内存，还要给连接、线程、OS page cache、备份和监控留空间。
+- redo log 写满或 checkpoint 推进慢时，会触发更激烈的刷脏页。
+
+**面试追问：为什么数据库偶发抖动不一定是 SQL 变慢？**
+可能是 Buffer Pool 命中率下降、脏页集中刷盘、redo checkpoint 压力、磁盘 IO 抖动、备份任务或大查询缓存污染导致。资深排查要把内存页、日志和磁盘 IO 一起看。
+
+> 事务主题学习顺序：先理解事务边界和 ACID，再理解并发异常与隔离级别；随后学习 MVCC 和锁如何实现隔离，最后学习 undo/redo/binlog、两阶段提交和崩溃恢复如何实现原子性与持久性。
+
+## 五、事务、MVCC、隔离级别与锁
+
+### 20. ACID 如何落到 InnoDB？
+
+| 属性 | 主要机制 |
+|---|---|
+| 原子性 | Undo、事务状态和回滚 |
+| 一致性 | 约束 + 事务 + 业务规则共同保证 |
+| 隔离性 | MVCC、锁和隔离级别 |
+| 持久性 | Redo、WAL、刷盘策略和崩溃恢复 |
+
+数据库机制不能自动保证业务不超卖；还需正确事务边界、条件更新、唯一约束和幂等。
+
+### 21. 隔离级别解决哪些并发问题？
+
+| 隔离级别 | 主要表现 |
+|---|---|
+| Read Uncommitted | 可能读未提交数据 |
+| Read Committed | 每次快照读生成新视图，可能不可重复读 |
+| Repeatable Read | 事务内快照通常稳定，结合 Next-Key Lock 处理当前读范围 |
+| Serializable | 并发最低，读写更强串行化 |
+
+隔离越强并发成本通常越高。先根据业务正确性选择，再处理锁等待和重试。
+
+### 22. MVCC、ReadView 和 Undo 版本链如何工作？
+
+记录变更通过 Undo 形成历史版本链；快照读根据事务 ID、ReadView 和可见性规则选择可见版本，从而让读写并发而不总是互相阻塞。
+
+RC 通常每个语句生成新 ReadView；RR 通常在事务首次一致性读时形成并复用。当前读如 `FOR UPDATE` 读取最新可见版本并加锁，不是普通快照读。
+
+### 23. Record、Gap 和 Next-Key Lock 是什么？
+
+- Record Lock：锁索引记录。
+- Gap Lock：锁索引间隙，抑制范围内插入。
+- Next-Key Lock：记录锁与前间隙组合。
+- Insert Intention：多个插入者表达插入意图，可在不同位置并发。
+
+锁落在索引上。更新条件不走合适索引会扩大扫描和锁范围；范围更新、长事务和热点行更容易放大阻塞。
+
+### 24. 死锁如何产生和治理？
+
+多个事务以不同顺序持有并等待资源形成环路。InnoDB 检测后选择一个事务回滚，应用需把死锁视为可预期错误并做有限、带退避的幂等重试。
+
+根治方向：统一加锁顺序、缩短事务、命中索引、拆批、减少热点和避免事务内 RPC。死锁日志要还原涉及 SQL、索引和资源顺序。
+
+### 25. 乐观锁、悲观锁和条件更新如何选？
+
+- 条件更新：`UPDATE ... WHERE status=?`，简单高效，优先用于状态推进和库存扣减。
+- 乐观锁：Version 比较，冲突低且允许重试。
+- 悲观锁：`FOR UPDATE`，冲突高、必须读取后决策且事务可保持很短。
+
+不能在持有数据库锁时调用慢外部接口；对外部操作使用状态机、任务表和补偿。
+
+### 深入：事务模块：ACID、并发与工程边界
+
+#### MySQL 事务 ACID 怎么理解？
+
+**结论先行：**
+ACID 分别是原子性、一致性、隔离性、持久性，InnoDB 通过 undo log、redo log、锁和 MVCC 等机制实现。
+
+**分层展开：**
+
+**原子性**
+- 事务内操作要么都成功，要么都回滚。
+- 主要依赖 undo log。
+
+**一致性**
+- 事务前后数据满足约束和业务规则。
+- 需要数据库机制和业务逻辑共同保证。
+
+**隔离性**
+- 并发事务互不干扰。
+- 通过锁和 MVCC 实现。
+
+**持久性**
+- 提交后的数据即使宕机也能恢复。
+- 主要依赖 redo log。
+
+**面试追问：一致性完全由数据库保证吗？**
+不是。数据库保证约束层面的一致性，业务一致性还需要代码、事务边界、幂等和补偿机制。
+
+**事务到底在解决什么问题？**
+
+没有事务时，多条 SQL 彼此独立，容易出现“部分成功”：
+
+```text
+账户 A 扣款成功
+账户 B 入账失败
+系统异常
+```
+
+事务把一组必须共同成功的 SQL 绑定成一个执行单元：
+
+```text
+开始事务
+  -> 扣款
+  -> 入账
+  -> 全部成功：COMMIT
+  -> 任意失败：ROLLBACK
+```
+
+它主要解决四类问题：
+
+1. 多条 SQL 部分成功或部分失败。
+2. 并发读写时的数据可见性和隔离问题。
+3. 并发写入时的覆盖、丢失更新和资源竞争。
+4. 数据库宕机后，已提交数据无法恢复或未提交数据错误残留。
+
+事务不能保证所有业务天然正确，它只能在明确的事务边界内提供数据库级保证。
+
+**SQL 事务的基本使用：**
+
+```sql
+start transaction;
+
+update account
+set balance = balance - 100
+where id = 1
+  and balance >= 100;
+
+update account
+set balance = balance + 100
+where id = 2;
+
+commit;
+```
+
+失败时：
+
+```sql
+rollback;
+```
+
+局部回滚可以使用保存点：
+
+```sql
+savepoint before_update;
+rollback to savepoint before_update;
+release savepoint before_update;
+```
+
+MySQL 默认开启自动提交：
+
+```sql
+select @@autocommit;
+```
+
+在 `autocommit=1` 时，一条独立的 `INSERT`、`UPDATE` 或 `DELETE` 通常就是一个独立事务；多条 SQL 需要原子执行时，要显式开启事务。
+
+**并发事务会遇到哪些问题？**
+
+要按读-读、读-写、写-读、写-写四种组合分析：
+
+| 并发组合 | 主要问题 |
+| --- | --- |
+| 读-读 | 通常没有数据覆盖，但可能存在快照版本差异、资源竞争、主从延迟和元数据锁等待 |
+| 读-写 | 脏读、不可重复读、幻读、当前读阻塞 |
+| 写-读 | 未提交写入的可见性、快照读与当前读差异、读写锁等待 |
+| 写-写 | 丢失更新、覆盖更新、锁等待、死锁、锁范围扩大 |
+
+**四个并发异常：**
+
+```text
+脏读：读取了其他事务尚未提交的数据
+脏写：覆盖了其他事务尚未提交的修改
+不可重复读：同一事务两次读取同一行，字段值发生变化
+幻读：同一事务两次执行范围查询，符合条件的记录集合发生变化
+```
+
+脏读示例：
+
+```text
+A：把 balance 从 1000 改成 900，但未提交
+B：读到 balance=900
+A：回滚，balance 恢复为 1000
+```
+
+脏写示例：
+
+```text
+A：写入 stock=9，但未提交
+B：覆盖写入 stock=8
+A：回滚，可能把 B 的修改一起覆盖
+```
+
+不可重复读示例：
+
+```text
+A：第一次读取 balance=1000
+B：修改 balance=900 并提交
+A：第二次读取 balance=900
+```
+
+幻读示例：
+
+```text
+A：第一次查询 age >= 18，返回 10 条
+B：插入一条 age=20 的记录并提交
+A：第二次查询，返回 11 条
+```
+
+可以这样区分：
+
+```text
+不可重复读：原来的那一行变了
+幻读：原来的查询范围里多了或少了行
+```
+
+**MySQL InnoDB 如何实现 ACID？**
+
+| 特性 | InnoDB 主要手段 | 解决的问题 |
+| --- | --- | --- |
+| 原子性 | undo log、事务回滚 | 多条 SQL 全部成功或全部撤销 |
+| 一致性 | 约束、事务边界、条件更新、状态机、幂等 | 数据满足结构和业务规则 |
+| 隔离性 | MVCC、Read View、行锁、间隙锁、Next-Key Lock、隔离级别 | 控制并发事务之间的可见性和冲突 |
+| 持久性 | redo log、WAL、binlog 两阶段提交、崩溃恢复 | 宕机后恢复已提交数据 |
+
+一次写事务的大致流程：
+
+```text
+按需加载数据页和索引页到 Buffer Pool
+  -> 获取必要的记录锁
+  -> 写 undo log，保存旧版本或回滚信息
+  -> 修改 Buffer Pool 中的数据页和索引页
+  -> 生成 redo log，写入 Log Buffer
+  -> 提交时 redo prepare
+  -> 写 binlog 并按配置持久化
+  -> redo commit
+  -> 返回提交成功
+  -> 后台线程异步刷脏页
+```
+
+因此：
+
+```text
+事务提交成功 != 数据页已经写入数据文件
+```
+
+提交成功但脏页尚未刷盘时，可能是：
+
+```text
+Buffer Pool：新值
+磁盘数据页：旧值
+redo log：已满足持久化条件
+```
+
+宕机后，InnoDB 读取旧数据页并重放 redo log，恢复已提交修改；未完成提交的事务则根据 undo log 回滚。
+
+**四种标准隔离级别：**
+
+| 隔离级别 | 脏读 | 不可重复读 | 幻读 | 并发性能 |
+| --- | --- | --- | --- | --- |
+| READ UNCOMMITTED | 可能 | 可能 | 可能 | 最高 |
+| READ COMMITTED | 避免 | 可能 | 可能 | 较高 |
+| REPEATABLE READ | 避免 | 避免普通快照读的不一致 | InnoDB 通过 MVCC 和锁处理 | 较好 |
+| SERIALIZABLE | 避免 | 避免 | 避免 | 最低 |
+
+MySQL InnoDB 默认使用 `REPEATABLE READ`。但必须区分：
+
+```text
+普通 SELECT：快照读，主要依赖 MVCC 和 Read View
+SELECT ... FOR UPDATE：当前读，读取最新版本并加锁
+UPDATE/DELETE：当前读，需要锁控制并发
+```
+
+在 RR 下，普通快照读通过 MVCC 和 undo log 读取一致版本；范围当前读则可能通过记录锁、间隙锁和 Next-Key Lock 防止其他事务插入符合条件的新记录。
+
+**事务解决不了什么？**
+
+- 不能把多个微服务的操作自动纳入同一个本地事务。
+- 不能自动回滚 Redis、MQ、第三方支付、HTTP、短信和文件上传等外部副作用。
+- 不能自动保证缓存与数据库一致，需要删除缓存、消息、补偿和对账。
+- 不能保证业务逻辑正确，例如没有 `balance >= 100` 条件时，事务也可能提交负余额。
+- 不能彻底消除死锁，只能通过固定加锁顺序、缩短事务、命中索引和重试降低影响。
+- 不能解决数据库过载、连接池耗尽和主从延迟，需要限流、降级、缓存、MQ、读写分离和分片。
+
+**工程事务边界的判断：**
+
+```text
+必须强一致的本地操作：放入同一个 MySQL 事务
+允许最终一致的操作：事务提交后通过 MQ/Outbox 异步处理
+外部副作用：不要长时间占用数据库事务，使用状态机、幂等和补偿
+```
+
+生产原则：
+
+- 事务尽量短，不在事务中调用外部 RPC。
+- 更新条件命中索引，减少锁范围。
+- 多资源加锁保持固定顺序，降低死锁概率。
+- 使用唯一索引、条件更新和版本号保证幂等与防并发覆盖。
+- 捕获死锁和锁等待超时，区分重试、回滚和业务补偿。
+- 大批量操作拆成小批次，避免长事务、undo 膨胀和主从延迟。
+
+**和 Redis、MongoDB 的区别**
+
+| 组件 | 事务定位 | 更适合解决的问题 | 不适合解决的问题 |
+| --- | --- | --- | --- |
+| MySQL/InnoDB | 完整本地 ACID 事务 | 多表多行强一致写入、状态流转、唯一约束、资金/库存/订单 | 跨服务长流程强事务、缓存一致性直接绑定 |
+| Redis | 命令队列连续执行 | Redis 内部简单原子组合、计数、缓存状态切换 | 数据库级回滚、复杂业务一致性、跨系统事务 |
+| MongoDB | 单文档原子 + 多文档事务补充 | 文档聚合根内原子更新、少量跨文档一致变更 | 高频大范围跨集合事务、复杂关系约束 |
+
+**MySQL 事务底层分别靠什么保证**
+- 原子性：靠 undo log，失败时按旧版本回滚。
+- 持久性：靠 redo log，提交后宕机可重放恢复。
+- 隔离性：靠 MVCC + 锁，快照读减少读写冲突，当前读通过行锁/间隙锁控制并发。
+- 一致性：靠主键/唯一键/外键/检查约束、事务边界、业务规则共同保证。
+- 复制一致性：靠 redo log 和 binlog 的两阶段提交，避免本机提交状态和复制日志不一致。
+
+**工程里如何使用 MySQL 事务**
+
+```sql
+START TRANSACTION;
+
+UPDATE account
+SET balance = balance - 100
+WHERE user_id = 1001 AND balance >= 100;
+
+INSERT INTO account_flow(flow_no, user_id, amount, type)
+VALUES ('flow_001', 1001, -100, 'deduct');
+
+COMMIT;
+```
+
+- 事务边界要短，不要在事务里调用外部 HTTP/RPC。
+- 关键更新用条件更新兜底，例如 `WHERE status = 'INIT'`、`WHERE stock >= n`。
+- 幂等用唯一索引兜底，例如订单号、流水号、请求号。
+- 失败要能重试，死锁和锁等待超时不能直接当业务成功。
+- 写 DB + 发 MQ 不在一个本地事务里，常用 Outbox/本地消息表补偿。
+
+**面试追问：MySQL 事务能不能解决所有一致性问题？**
+不能。MySQL 事务只能保证同一个数据库本地事务内的一致性。跨 Redis 缓存、MQ、第三方 API、多个微服务时，仍然要靠幂等、Outbox、事务消息、补偿任务、对账和状态机。
+
+#### MVCC 是什么？
+
+**结论先行：**
+MVCC 是多版本并发控制，通过 undo log 和 ReadView 让读写并发时读请求看到一致版本，减少锁冲突。
+
+**分层展开：**
+
+**核心机制**
+- 每行记录有隐藏事务 ID 和回滚指针。
+- undo log 保存历史版本。
+- ReadView 判断哪个版本对当前事务可见。
+
+**解决问题**
+- 快照读不阻塞写。
+- 写不阻塞快照读。
+- 提升并发性能。
+
+**隔离级别差异**
+- RC 每次快照读生成新 ReadView。
+- RR 事务内第一次快照读生成 ReadView，后续复用。
+
+**面试追问：MVCC 能解决幻读吗？**
+快照读在 RR 下通过一致性视图避免幻读感知；当前读需要 next-key lock 防止幻读。
+
+**图例：一行数据的版本链**
+
+```text
+聚簇索引记录 id=1001
+┌────────────────────────────────────────────┐
+│ name='A3', trx_id=30, roll_pointer ─────┐  │  当前最新版本
+└──────────────────────────────────────────│─┘
+                                           │ undo
+┌──────────────────────────────────────────▼─┐
+│ name='A2', trx_id=20, roll_pointer ─────┐  │  历史版本
+└──────────────────────────────────────────│─┘
+                                           │ undo
+┌──────────────────────────────────────────▼─┐
+│ name='A1', trx_id=10, roll_pointer=null    │  更早版本
+└────────────────────────────────────────────┘
+```
+
+**ReadView 怎么判断可见：**
+- 当前事务能看到哪些已提交事务版本。
+- 如果最新版本不可见，就沿着 undo 版本链往前找。
+- RC：每次快照读生成新 ReadView，所以能读到别人新提交的数据。
+- RR：事务第一次快照读生成 ReadView，后续复用，所以同一事务内多次读结果一致。
+
+**案例：为什么 RR 下两次普通 select 结果一样？**
+
+```text
+T1 开启事务并第一次 select，生成 ReadView。
+T2 更新同一行并提交。
+T1 再次普通 select，仍复用旧 ReadView，所以看不到 T2 的新版本。
+T1 如果执行 select ... for update，这是当前读，会读最新版本并加锁。
+```
+
+**面试表达：**
+MVCC 解决的是快照读的一致性和读写并发问题，不是让所有读都不加锁。普通 `select` 多数是快照读，`update/delete/select for update` 是当前读，需要通过锁保证并发正确。
+
+#### 可重复读和读已提交有什么区别？
+
+**结论先行：**
+读已提交每次读都能看到其他事务已提交的新数据；可重复读保证同一事务内多次快照读结果一致。
+
+**分层展开：**
+
+**读已提交 RC**
+- 每次 select 创建新的 ReadView。
+- 可以避免脏读。
+- 可能出现不可重复读。
+
+**可重复读 RR**
+- 事务内复用 ReadView。
+- 避免不可重复读。
+- InnoDB 结合 next-key lock 处理当前读幻读。
+
+**工程选择**
+- MySQL 默认 RR。
+- 需要更接近实时读取已提交数据可用 RC。
+- 核心业务要明确读是快照读还是当前读。
+
+**面试追问：普通 select 和 select for update 一样吗？**
+不一样。普通 select 是快照读，`select for update` 是当前读，会加锁并读取最新已提交版本。
+
+### 深入：锁模块：MySQL 和 InnoDB 的锁如何分类？
+
+**结论先行：**
+不要把“行锁、排他锁、间隙锁”当成同一层级的概念。MySQL 的锁可以从作用域、锁模式、锁定对象、生命周期和事务关系五个维度分类。InnoDB 主要通过索引记录锁、范围锁和意向锁控制事务并发；MySQL Server 层还存在元数据锁，业务层还可以使用命名锁。
+
+**锁由哪一层实现？**
+
+~~~
+InnoDB 存储引擎层：
+  Record Lock、Gap Lock、Next-Key Lock
+  Insert Intention Lock、IS/IX 意向锁、AUTO-INC 锁
+
+MySQL Server 层：
+  MDL 元数据锁、显式表锁、GET_LOCK 命名锁
+~~~
+
+InnoDB 锁主要保护事务中的索引记录和索引范围；MySQL Server 层的 MDL 保护表结构，显式表锁保护整张表，命名锁保护一个逻辑名称。不要把它们混成同一种锁。
+
+~~~
+Record/Gap/Next-Key：锁定对象
+S/X：锁模式
+IS/IX：表级意向状态
+MDL：表结构元数据
+GET_LOCK：连接级业务互斥
+~~~
+
+补充说明：
+
+- InnoDB 行锁本质是索引记录锁，聚簇索引和二级索引都可能被锁定。
+- 通过二级索引更新时，通常还要回到聚簇索引锁定对应主键记录。
+- RR 下范围当前读可能在聚簇索引或二级索引上形成 Gap Lock / Next-Key Lock。
+- GET_LOCK 不保护业务行数据，也不随普通事务 COMMIT/ROLLBACK 自动回滚，通常与连接生命周期相关。
+
+**一、按作用域分类**
+
+| 作用域 | 典型锁 | 锁住的对象 | 主要作用 |
+| --- | --- | --- | --- |
+| 实例/业务范围 | 命名锁 `GET_LOCK` | 一个字符串名称 | 协调同一实例内的业务任务 |
+| 表级 | 表锁、意向锁、AUTO-INC 锁 | 整张表或表级状态 | 协调表级操作和行锁 |
+| 行/索引级 | 记录锁、间隙锁、Next-Key Lock | 索引记录或索引范围 | 控制事务并发读写 |
+| 元数据级 | MDL | 表结构元数据 | 防止查询和 DDL 同时破坏表定义 |
+
+**二、按锁模式分类**
+
+| 锁模式 | 含义 | 典型来源 |
+| --- | --- | --- |
+| S（Shared）共享锁 | 多个事务可以共享读取，但通常阻止写入 | `FOR SHARE` |
+| X（Exclusive）排他锁 | 当前事务独占修改，阻止其他 S/X 锁 | `FOR UPDATE`、`UPDATE`、`DELETE` |
+| IS（Intention Shared） | 表示事务准备在行上加 S 锁 | 共享锁前的表级意向锁 |
+| IX（Intention Exclusive） | 表示事务准备在行上加 X 锁 | 排他锁前的表级意向锁 |
+| AUTO-INC | 保护自增值分配过程 | 自增主键插入 |
+
+S/X 描述的是“允许什么操作”，记录锁/间隙锁描述的是“锁住哪里”，两者可以组合：
+
+```text
+id=100 的索引记录 + X 锁
+(10,20) 的索引间隙 + GAP 锁
+(10,20] 的索引范围 + Next-Key Lock
+```
+
+**三、按锁定对象分类**
+
+1. **记录锁（Record Lock）**：锁住 B+Tree 中的一条索引记录。InnoDB 的行锁本质上是索引记录锁，不是直接给物理数据行加一个 `locked=true` 标记。主键记录位于聚簇索引中，锁住主键索引记录通常等价于锁住整行。
+2. **间隙锁（Gap Lock）**：锁住两条索引记录之间不存在真实行的范围，主要阻止其他事务向该范围插入记录。
+3. **Next-Key Lock**：记录锁 + 间隙锁，例如锁住 `(10,20]`，既限制范围内插入，也限制记录 `20` 的修改。
+4. **插入意向锁（Insert Intention Lock）**：事务准备在某个间隙插入记录时产生的意向。多个事务在不同位置插入通常可以并发，但会与阻止插入的 Gap Lock 冲突。
+5. **表级意向锁（IS/IX）**：不是把整张表锁住，而是向其他表级锁请求者声明“本表中存在行级 S/X 锁”，用于快速判断表锁是否冲突。
+
+**四、按是否属于事务锁分类**
+
+| 类型 | 是否跟随事务提交/回滚 | 典型用途 |
+| --- | --- | --- |
+| InnoDB 记录锁、间隙锁、意向锁 | 是，通常持有到事务结束 | 行级并发控制 |
+| 显式表锁 `LOCK TABLES` | 由显式解锁或会话/事务状态控制 | 特殊批处理或兼容场景 |
+| MDL | 与语句或事务持有的表访问状态相关 | 防止 DDL 与查询/写入冲突 |
+| 命名锁 `GET_LOCK` | 通常绑定连接，不随事务回滚自动释放 | 任务互斥、单实例选主 |
+
+**五、锁的兼容关系**
+
+简化理解如下：
+
+| 已持有 / 请求 | S | X |
+| --- | ---: | ---: |
+| S | 通常兼容 | 冲突 |
+| X | 冲突 | 冲突 |
+
+因此：
+
+- 普通快照读通常不申请行 S 锁，不会因为 X 锁而等待。
+- `FOR SHARE` 申请 S 锁，多个共享锁通常可以共存。
+- `FOR UPDATE`、`UPDATE`、`DELETE` 申请 X 锁，会阻塞其他冲突锁请求。
+
+**六、最容易混淆的三种锁**
+
+```text
+行锁：锁住哪里？一条索引记录
+排他锁：锁的模式是什么？X，独占访问
+间隙锁：锁住哪里？索引记录之间的范围
+```
+
+例如：
+
+```sql
+select *
+from user
+where id = 100
+for update;
+```
+
+可以理解为：
+
+```text
+表 user：先有 IX 意向排他锁
+主键索引 id=100：再加 X 记录锁
+```
+
+范围当前读：
+
+```sql
+select *
+from user
+where age between 10 and 20
+for update;
+```
+
+在 RR 下可能形成：
+
+```text
+age=10、age=20：记录锁
+(10,20)：间隙锁
+整体范围：Next-Key Lock
+```
+
+**七、锁对其他操作的影响**
+
+```text
+普通 SELECT
+  -> 通常是快照读，不申请记录 S 锁
+  -> 通常不被行 X 锁阻塞
+
+SELECT ... FOR SHARE
+  -> 当前读，申请 S 锁
+  -> 与 UPDATE/DELETE 的 X 锁冲突
+
+SELECT ... FOR UPDATE
+  -> 当前读，申请 X 锁
+  -> 阻塞其他修改和冲突的当前读
+
+UPDATE/DELETE
+  -> 当前读并申请 X 锁
+  -> 锁通常持有到 COMMIT/ROLLBACK
+```
+
+**八、为什么没走索引会放大锁范围？**
+
+InnoDB 的锁依赖索引访问路径。条件没有合适索引时：
+
+```text
+全表或大范围扫描
+  -> 判断哪些记录满足条件
+  -> 访问和锁定更多索引记录
+  -> 其他事务等待范围扩大
+```
+
+因此锁排查必须同时看：
+
+```text
+SQL 条件
+执行计划
+实际命中的索引
+锁定索引
+锁模式和锁范围
+事务持有时间
+```
+
+**分层展开：**
+
+**行锁**
+- 锁住索引记录。
+- 命中索引时粒度较小。
+
+**间隙锁**
+- 锁住索引记录之间的间隙。
+- 防止其他事务插入导致幻读。
+
+**next-key lock**
+- 行锁 + 间隙锁。
+- RR 下当前读常见。
+
+**意向锁**
+- 表级锁。
+- 表示事务接下来要加行锁。
+- 用于协调表锁和行锁。
+
+**面试追问：行锁一定只锁一行吗？**
+不一定。如果查询没走索引，可能扫描大量记录并加锁，甚至接近锁表效果。
+
+**图例：next-key lock 锁住什么**
+
+假设索引 `idx_age` 中已有记录：
+
+```text
+age index:
+(-∞, 10]  (10, 20]  (20, 30]  (30, +∞)
+       10        20        30
+```
+
+执行：
+
+```sql
+select * from user where age between 10 and 20 for update;
+```
+
+在 RR 隔离级别下，InnoDB 可能不仅锁住 `10`、`20` 这些记录，还会锁住相关间隙，防止其他事务插入 `age=15` 造成当前读幻读。
+
+```text
+锁记录：age=10、age=20
+锁间隙：(10,20)
+效果：其他事务不能插入 age=15
+```
+
+**当前读和快照读的区别：**
+
+| 类型 | 典型 SQL | 是否读最新版本 | 是否加锁 | 用途 |
+| --- | --- | --- | --- | --- |
+| 快照读 | `select * from t where id=1` | 按 ReadView 判断 | 通常不加锁 | 普通查询 |
+| 当前读 | `select ... for update` | 是 | 加锁 | 先查后改 |
+| 当前读 | `update/delete` | 是 | 加锁 | 修改数据 |
+
+**工程提醒：**
+库存扣减、任务抢占、状态流转不能只靠先 `select` 再 `update`。要么用 `select for update` 放进事务，要么更推荐条件更新：
+
+```sql
+update task
+set status = 'RUNNING'
+where id = ? and status = 'INIT';
+```
+
+根据 affected rows 判断是否抢占成功。
+
+#### record lock、gap lock、next-key lock 和 insert intention lock 怎么讲？
+
+**结论先行：**
+InnoDB 行锁是加在索引上的。RR 隔离级别下，为了防止当前读幻读，范围查询可能加 next-key lock，也就是记录锁 + 间隙锁。
+
+**四类锁的直观理解：**
+
+- record lock：锁住一条索引记录。
+- gap lock：锁住两条索引记录之间的间隙，不锁已有记录本身。
+- next-key lock：record lock + gap lock，锁住记录以及它前面的间隙。
+- insert intention lock：插入意向锁，多个事务插入不同位置时可并发，但会和 gap lock 冲突。
+
+**典型场景：**
+
+```sql
+select * from user where age between 10 and 20 for update;
+```
+
+如果 `age` 上有索引，RR 下不只是锁住已有的 age=10 到 20 的记录，还可能锁住相关间隙，防止其他事务插入新的 age=15 记录造成幻读。
+
+**高危点：**
+
+- 条件没走索引，锁范围可能扩大。
+- 范围更新比等值主键更新更容易锁住间隙。
+- 长事务持锁时间长，容易放大阻塞。
+- RC 下 gap lock 使用更少，但并不代表没有锁冲突。
+
+**面试追问：为什么一个 update 没命中索引会锁很多行？**
+因为 InnoDB 需要扫描记录判断哪些行满足条件，扫描过程中会对相关记录加锁。条件没有索引时，扫描范围变大，锁范围也会随之扩大。
+
+#### 死锁怎么产生？怎么处理？
+
+**结论先行：**
+死锁是多个事务互相持有对方需要的锁，形成循环等待。处理方式是统一加锁顺序、缩短事务、命中索引和失败重试。
+
+**分层展开：**
+
+**产生原因**
+- 多事务更新资源顺序不一致。
+- 范围更新锁住间隙。
+- SQL 未命中索引导致锁范围扩大。
+- 长事务持锁时间过长。
+
+**处理机制**
+- InnoDB 可以检测死锁。
+- 回滚其中一个事务。
+- 应用层需要识别错误并重试。
+
+**治理方案**
+- 固定资源访问顺序。
+- 事务尽量短。
+- 更新条件走索引。
+- 拆分大事务。
+
+**面试追问：死锁能完全避免吗？**
+复杂系统里很难完全避免，关键是降低概率，并让业务具备安全重试和幂等能力。
+
+## 六、Redo、Undo、Binlog、提交与崩溃恢复
+
+### 26. Redo、Undo 和 Binlog 分别做什么？
+
+| 日志 | 层次 | 作用 |
+|---|---|---|
+| Redo | InnoDB | WAL、崩溃后重做已提交页修改 |
+| Undo | InnoDB | 回滚未提交修改、提供 MVCC 历史版本 |
+| Binlog | Server | 逻辑变更、复制、CDC 和时间点恢复 |
+
+Redo 不是业务审计，Binlog 也不能代替完整备份。
+
+### 27. 一次更新和提交经历什么？
+
+```text
+定位/加载数据页
+  -> 申请必要索引锁
+  -> 写 Undo
+  -> 修改 Buffer Pool 脏页
+  -> 生成 Redo 到 Log Buffer
+  -> Redo Prepare
+  -> 写 Binlog
+  -> Redo Commit
+  -> 返回提交成功
+  -> 后台刷脏页
+```
+
+提交成功不要求数据页已经落盘，而要求提交所需日志达到配置定义的持久化条件。
+
+### 28. Redo 与 Binlog 为什么需要两阶段提交？
+
+它协调 InnoDB 恢复状态与 Server Binlog，避免一个已提交、另一个缺失造成主库恢复与复制不一致。
+
+- Redo Prepare 且存在对应 Binlog：恢复时提交。
+- Redo Prepare 但无 Binlog：恢复时回滚。
+- Redo Commit：事务已提交。
+
+这不是跨业务系统的分布式两阶段提交。
+
+### 29. Doublewrite 和 Checkpoint 解决什么问题？
+
+Doublewrite 降低数据页部分写造成页损坏的风险；Checkpoint 推进已安全刷盘位置，让旧 Redo 空间可复用。
+
+脏页过多、Checkpoint 压力和磁盘抖动会造成延迟尖峰。应监控脏页比例、Redo 使用、Fsync 和磁盘延迟，而不是只看 CPU。
+
+### 深入：事务持久化模块：redo、undo、binlog 与恢复
+
+#### redo log、undo log、binlog 分别做什么？
+
+**结论先行：**
+redo log 保证崩溃恢复，undo log 支持回滚和 MVCC，binlog 用于复制、归档和数据恢复。
+
+**分层展开：**
+
+**redo log**
+- InnoDB 引擎层日志。
+- 记录物理页修改。
+- 保证持久性。
+
+**undo log**
+- 保存修改前版本。
+- 支持事务回滚。
+- 支持 MVCC 历史版本读取。
+
+**binlog**
+- MySQL Server 层日志。
+- 记录逻辑变更。
+- 用于主从复制和恢复。
+
+**面试追问：为什么需要两阶段提交？**
+为了保证 redo log 和 binlog 一致，避免事务提交后一个日志有、另一个没有，导致崩溃恢复或主从复制不一致。
+
+#### redo/binlog 两阶段提交和崩溃恢复怎么答？
+
+**核心链路：**
+
+```text
+执行 INSERT/UPDATE/DELETE
+  -> 按需加载数据页和索引页到 Buffer Pool
+  -> 加记录锁或其他必要的索引锁
+  -> 写 undo log，保存旧版本或回滚信息
+  -> 修改 Buffer Pool 中的数据页和索引页
+  -> 生成 redo log，写入 Log Buffer
+  -> 事务提交时，redo log 写 prepare
+  -> MySQL Server 写 binlog 并按配置持久化
+  -> redo log 写 commit
+  -> 返回提交成功
+  -> 后台线程异步刷脏页
+```
+
+**一次写操作具体会加哪些锁？**
+
+写操作的锁不是固定的一把锁，而是由以下因素共同决定：
+
+~~~
+INSERT / UPDATE / DELETE 类型
+WHERE 条件和访问路径
+使用的是主键、唯一二级索引还是普通二级索引
+是否存在范围条件
+事务隔离级别
+是否需要检查唯一键、外键或自增值
+~~~
+
+可以用下面的通用顺序理解：
+
+~~~
+1. 对表建立 IX 等意向锁，表示事务准备加行级排他锁
+2. 按执行计划扫描聚簇索引或二级索引
+3. 对需要修改或检查的索引记录申请 X 记录锁
+4. RR 下范围访问可能同时申请 Gap Lock / Next-Key Lock
+5. 通过二级索引定位数据时，回到聚簇索引锁定对应主键记录
+6. 修改 Buffer Pool 中的数据页和索引页
+7. 提交或回滚时统一释放事务持有的锁
+~~~
+
+**UPDATE / DELETE 的典型锁过程：**
+
+~~~sql
+update user
+set name = 'Tom'
+where age = 20;
+~~~
+
+如果 age 上有普通二级索引：
+
+~~~
+表 user：IX 意向排他锁
+二级索引 idx_age：锁定符合条件的索引记录
+聚簇索引 PRIMARY：锁定对应主键记录
+~~~
+
+如果查询是范围条件：
+
+~~~sql
+update user
+set name = 'Tom'
+where age between 10 and 20;
+~~~
+
+RR 下可能形成：
+
+~~~
+二级索引中的记录锁
+二级索引中的间隙锁
+二级索引上的 Next-Key Lock
+对应聚簇索引记录的 X 锁
+~~~
+
+如果 age 没有索引，InnoDB 只能扫描聚簇索引，无法只定位 age=10～20 的索引范围，可能锁住大量聚簇索引记录和间隙，效果接近大范围锁定。因此“写条件是否命中索引”不仅影响查询速度，也直接影响锁冲突范围。
+
+**INSERT 的典型锁过程：**
+
+~~~sql
+insert into user(id, age, name)
+values (100, 20, 'Tom');
+~~~
+
+大致会经历：
+
+~~~
+表 user：IX 意向排他锁
+唯一键/主键检查：读取并检查相关索引记录
+插入位置：申请 Insert Intention Lock
+聚簇索引：写入新主键记录并形成 X 记录锁
+二级索引：写入 age、name 等索引项并加相应记录锁
+自增主键：必要时参与 AUTO-INC 锁或自增值分配保护
+~~~
+
+如果插入位置的间隙被其他事务的 Gap Lock 或 Next-Key Lock 占用，INSERT 可能等待；如果主键或唯一键冲突，插入会失败或进入 ON DUPLICATE KEY UPDATE 的更新路径。
+
+**锁的持有时间：**
+
+~~~
+显式事务：通常持有到 COMMIT 或 ROLLBACK
+autocommit=1：语句完成后自动提交并释放事务锁
+~~~
+
+因此下面两种写法的锁影响范围不同：
+
+~~~sql
+-- 独立语句：执行完成后通常立即提交
+update user set name = 'Tom' where id = 1;
+~~~
+
+~~~sql
+-- 显式事务：锁会持续到事务结束
+start transaction;
+update user set name = 'Tom' where id = 1;
+-- 此时其他事务可能等待
+commit;
+~~~
+
+需要强调：普通快照读通常不申请行级 S 锁，因此可以读取其他事务提交前的历史版本；但 SELECT ... FOR UPDATE、SELECT ... FOR SHARE、UPDATE、DELETE 都可能与写锁产生等待。
+
+**事务执行过程中的几个关键状态：**
+
+```text
+事务未提交：
+  Buffer Pool 中可能已经是新值
+  磁盘数据页可能仍是旧值
+  undo 保存旧版本
+  行锁仍由当前事务持有
+
+事务提交成功但尚未刷脏页：
+  Buffer Pool 是新值
+  磁盘数据页可能仍是旧值
+  redo 和 binlog 已满足持久化条件
+
+后台刷脏完成：
+  Buffer Pool 是新值
+  磁盘数据页也是新值
+```
+
+因此，Buffer Pool 和数据文件不要求在任意时刻都完全一致。常见的正常状态是：Buffer Pool 中保存最新值，数据文件中暂时保留旧值；只要 redo log 已经按照提交要求持久化，宕机后就可以通过 redo 重放恢复数据页。
+
+**事务回滚：**
+
+如果执行过程中发生 SQL 异常、应用主动执行 `ROLLBACK`，或者崩溃恢复发现事务没有完成提交，InnoDB 会根据 undo log 撤销本次修改：
+
+```text
+读取 undo log
+  -> 恢复数据页和索引页的旧版本
+  -> 清理事务版本信息
+  -> 释放行锁
+  -> 事务回滚完成
+```
+
+undo log 不仅用于回滚，也用于 MVCC。其他事务在事务 A 尚未提交时，不能直接读取事务 A 的未提交修改，而是根据隔离级别通过 undo 版本链读取可见的历史版本。
+
+**并发写入中可能遇到的情况：**
+
+- 两个事务更新同一行时，后来的事务需要等待前一个事务释放行锁。
+- 等待超过 `innodb_lock_wait_timeout`，可能返回锁等待超时错误。
+- 多个事务以不同顺序持有多把锁时，可能形成死锁；InnoDB 会选择回滚其中一个事务，应用层应捕获死锁错误并进行有限次数重试。
+- 条件没有命中合适索引时，扫描范围和锁范围都可能扩大，放大阻塞风险。
+
+**不同崩溃时机的处理：**
+
+| 崩溃位置 | 典型日志状态 | 恢复结果 |
+| --- | --- | --- |
+| redo prepare 之前 | 没有完整提交状态 | 未完成事务回滚 |
+| redo prepare 后、binlog 前 | redo 为 prepare，binlog 不存在 | 回滚事务 |
+| binlog 已写入、redo commit 前 | redo 为 prepare，binlog 存在 | 继续提交 redo |
+| redo commit 后、数据页刷盘前 | redo 已提交，数据页可能是旧页 | 重放 redo，恢复已提交修改 |
+
+两阶段提交依赖的判断原则是：
+
+```text
+redo prepare + 找到对应 binlog -> 事务应提交
+redo prepare + 找不到对应 binlog -> 事务应回滚
+redo commit                 -> 事务已提交
+```
+
+**磁盘与 Buffer Pool 一致性的保证手段：**
+
+1. **WAL（Write-Ahead Logging）**：先保证 redo log 持久化，再允许数据页延迟刷盘。这样可以用顺序日志写入替代每次更新都进行随机数据页写入。
+2. **redo log**：保证已提交但尚未刷盘的数据页在崩溃后可以重做恢复。
+3. **undo log**：保证未提交事务可以撤销，并为 MVCC 提供历史版本。
+4. **redo/binlog 两阶段提交**：协调 InnoDB 的 redo 和 Server 层的 binlog，避免主库恢复状态和从库复制状态不一致。
+5. **checkpoint 和后台刷脏**：持续将脏页写回数据文件，并推进 redo 空间回收，避免脏页和日志无限增长。
+6. **doublewrite buffer**：降低数据页只写入一部分导致页断裂的风险。刷脏时先写 doublewrite 区域，再写真实数据文件；崩溃恢复时可用完整页修复损坏页。
+
+需要区分：
+
+```text
+事务提交成功 != 数据页已经写入数据文件
+事务提交成功 = 提交所需日志已经满足持久化条件
+```
+
+**为什么需要两阶段提交：**
+
+- redo log 是 InnoDB 的崩溃恢复依据。
+- binlog 是主从复制和逻辑恢复依据。
+- 如果二者不一致，可能出现主库恢复后有数据、从库没同步，或者 binlog 有记录但引擎没提交。
+
+**崩溃恢复判断：**
+
+- redo prepare，有 binlog：认为事务已提交，恢复。
+- redo prepare，无 binlog：认为事务未完成，回滚。
+- redo commit：事务已提交。
+
+**面试表达：**
+两阶段提交解决的是存储引擎日志和 server 层日志的一致性问题。它不是分布式事务的两阶段提交，而是 MySQL 内部为了同时保证崩溃恢复和主从复制一致所做的提交协议。
+
+## 七、复制、高可用、备份与灾备
+
+### 30. MySQL 主从复制如何工作？
+
+```text
+Primary 提交 Binlog
+  -> Replica IO/Receiver 获取日志
+  -> 写 Relay Log
+  -> SQL/Applier 线程应用事务
+  -> 更新复制位点/GTID
+```
+
+复制通常异步，存在延迟和故障时的数据丢失窗口。并行复制提高应用能力，但大事务、热点冲突、DDL 和从库资源不足仍会造成延迟。
+
+### 31. GTID 解决什么问题？
+
+GTID 为已提交事务提供全局身份，简化复制定位、故障切换和拓扑变更，避免人工维护文件与 Position。
+
+它不自动保证零丢失，也不替代拓扑一致性检查。切换前仍需确认候选节点已执行集合、复制健康和业务写入隔离。
+
+### 32. 异步、半同步和 Group Replication 如何取舍？
+
+- 异步：延迟低、可用性高，但主库故障可能丢未复制事务。
+- 半同步：至少一个副本收到日志后返回，降低丢失概率，故障/网络异常会增加写延迟或退化。
+- Group Replication/MGR：基于组通信和一致性协议管理成员与事务认证，自动化更强但运维和冲突模型更复杂。
+
+选择取决于 RPO、RTO、跨地域延迟、团队能力和写可用性要求。
+
+### 33. 主从延迟如何排查？
+
+- 主库是否有大事务、突发写、DDL 或 Binlog 量增长。
+- IO 接收慢还是 SQL 应用慢。
+- Relay Log 是否堆积，Applier 是否有热点冲突。
+- 从库 CPU、磁盘、Buffer Pool 和网络是否不足。
+- 是否有备份、报表或 DDL 争抢资源。
+
+强一致读临时回主；根治通过拆小事务、并行复制、优化从库资源和隔离任务。不要只依赖单一延迟秒数指标。
+
+### 34. 故障切换如何保证正确？
+
+```text
+隔离旧 Primary 写入
+  -> 收集各副本 GTID/位点和健康状态
+  -> 选择数据最新且可承载的候选
+  -> 提升并重建复制拓扑
+  -> 应用刷新路由/连接
+  -> 校验写入、复制和业务数据
+  -> 处理旧主回归
+```
+
+必须先防双写，再选主。客户端重试要带幂等键；切换后通过业务流水和对账确认是否存在丢失或重复。
+
+### 35. 备份、恢复和 PITR 如何设计？
+
+**结论先行：** 备份的价值由恢复演练证明。常用完整备份加持续 Binlog，实现恢复到指定时间点。
+
+- 明确 RPO/RTO、保留周期、加密和异地保存。
+- 备份与线上 IO 隔离，校验完整性。
+- 恢复：还原基础备份，再按顺序回放 Binlog 到目标时间。
+- 定期演练恢复时长、应用连接、权限和数据对账。
+- 复制不是备份，误删会复制到所有副本。
+
+### 深入：MySQL 主从复制原理是什么？
+
+**结论先行：**
+主库写入 binlog，从库 IO 线程拉取 binlog 写 relay log，SQL 线程重放 relay log，实现数据复制。
+
+**分层展开：**
+
+**流程**
+- 复制启动后，从库 IO 线程连接主库，并携带 file/position 或 GTID 位点请求增量日志。
+- 主库 dump 线程从指定位置读取 binlog；主库暂时没有新日志时保持连接等待。
+- 主库事务提交阶段完成 binlog 写入后，新的 binlog event 才会被持续发送给从库。
+- 从库 IO 线程接收 binlog，并先写入本地 relay log。
+- 从库 SQL/applier 线程读取 relay log，执行事务并修改从库数据。
+
+完整链路：
+
+```text
+主库事务提交
+    -> 主库 binlog
+    -> 主库 dump 线程
+    -> 网络传输
+    -> 从库 IO 线程
+    -> 从库 relay log
+    -> 从库 SQL/applier 线程
+    -> 从库 InnoDB 数据
+```
+
+**为什么需要 relay log？**
+
+relay log 是从库接收主库日志后的本地中转日志，不是主库 binlog 的另一种命名。它主要解决以下问题：
+
+- **解耦接收和执行**：IO 线程负责接收并落 relay log，SQL 线程负责读取和应用，接收速度和执行速度可以不同。
+- **吸收短时流量波动**：主库发送较快时，日志先在 relay log 中堆积，SQL 线程再逐步消费。
+- **支持断点恢复**：IO 线程可能已经接收到较新的日志，而 SQL 线程只执行到较早位置；重启后可以从 relay log 的应用位点继续执行。
+- **支持并行回放**：从库可以从 relay log 中拆分事务，由多个 worker 并行应用。
+- **便于定位延迟**：可以分别观察“日志是否已经拉到从库”和“日志是否已经应用完成”。
+
+从库自己的 binlog 默认不是 relay log 的替代品：
+
+```text
+relay log：保存上游传入、等待本地应用的复制事件
+binlog：保存本机作为复制源时对下游提供的变更事件
+```
+
+如果要做级联复制，可以开启：
+
+```ini
+log_replica_updates=ON
+```
+
+旧版本参数名为：
+
+```ini
+log_slave_updates=ON
+```
+
+此时从库应用上游事务后，会将对应变更写入自己的 binlog，供下游从库复制；但复制链路仍然是：
+
+```text
+上游 binlog -> 本机 relay log -> 本机应用 -> 本机 binlog -> 下游
+```
+
+**复制中的时间关系：**
+
+```text
+T1：主库执行写操作
+T2：主库提交阶段写 binlog
+T3：主库向从库发送 binlog
+T4：从库 IO 线程写 relay log
+T5：从库 SQL 线程应用事务
+```
+
+因此：
+
+```text
+主库提交成功
+  != 从库已经收到 binlog
+  != 从库已经执行完成
+```
+
+IO 线程正常但 SQL 线程跟不上时，会表现为 relay log 堆积；IO 线程停止则优先排查网络、权限、复制位点、主库 binlog 文件和连接状态。
+
+**如何判断 IO 线程和 SQL 线程的进度？**
+
+```sql
+show replica status\G
+```
+
+旧版本可以使用：
+
+```sql
+show slave status\G
+```
+
+重点关注：
+
+- `Replica_IO_Running`：IO 线程是否正常运行。
+- `Replica_SQL_Running`：SQL/applier 线程是否正常运行。
+- `Read_Source_Log_Pos`：IO 线程从主库读取到的位置。
+- `Exec_Source_Log_Pos`：SQL 线程已经应用到的位置。
+- `Seconds_Behind_Source`：粗略的应用延迟指标，不能单独作为准确判断依据。
+
+如果读取位点明显领先执行位点，通常说明日志已经传到从库，但 SQL/applier 线程应用速度不足。
+
+**复制模式**
+- 异步复制：性能好但可能丢数据。
+- 半同步复制：至少一个从库确认后返回，降低丢失风险。
+- 组复制：更强一致和高可用能力。
+
+**常见问题**
+- 主从延迟。
+- 复制中断。
+- 数据不一致。
+- 大事务导致延迟。
+
+**面试追问：如何降低主从延迟？**
+避免大事务，优化从库 SQL 执行，开启并行复制，合理拆库拆表，读请求对一致性敏感时读主库。
+
+### 深入：读写分离有什么坑？
+
+**结论先行：**
+读写分离能扩展读能力，但会引入主从延迟导致的读写不一致，需要按业务一致性选择读主、延迟判断或会话级一致性。
+
+**分层展开：**
+
+**典型问题**
+- 写完马上读从库读不到。
+- 从库延迟导致状态回退。
+- 复杂查询压垮从库。
+
+**解决方案**
+- 写后短时间读主。
+- 根据 GTID 或位点判断从库追平。
+- 核心链路读主。
+- 从库按业务隔离。
+
+**工程建议**
+- 不要把所有读都丢给从库。
+- 监控复制延迟。
+- 客户端路由要可配置。
+
+**面试追问：读写分离能提高写能力吗？**
+不能。写仍然主要受主库限制。写扩展通常需要分库分表、业务拆分或架构调整。
+
+## 八、性能优化、容量规划与分库分表
+
+### 36. 数据库并发和连接池如何估算？
+
+```text
+concurrency ~= peak QPS * average DB latency seconds
+instance connection budget <= DB safe connections / app instance count
+```
+
+Little's Law 只给初始估算，还要考虑慢 SQL 分位数、事务占用、后台任务和故障余量。连接池越大不代表吞吐越高，过多并发会增加上下文切换、锁竞争和内存。
+
+### 37. 存储容量如何估算？
+
+```text
+annual rows = peak or forecast daily rows * retention days
+data bytes = rows * measured average row bytes
+total bytes = data + all indexes + binlog/undo/temp headroom
+```
+
+使用真实表和索引实测，不只按字段长度相加；还需考虑页填充、主键进入二级索引、历史增长、备份空间、DDL 临时空间和副本倍数。
+
+### 38. 慢 SQL 如何系统优化？
+
+1. 从慢日志和链路确定业务影响、调用频率与参数。
+2. 用执行计划判断扫描、回表、排序、临时表和 Join。
+3. 检查数据分布、统计信息、锁等待和 Buffer Pool/IO。
+4. 选择索引、SQL 改写、Seek 分页、批量、预聚合或缓存。
+5. 在真实量级压测读写影响，灰度发布并观察回归。
+
+不能只优化单次耗时，还要看调用次数和索引写放大。
+
+### 39. 什么时候需要读写分离？
+
+读流量显著高且允许复制延迟时，可把报表、列表等读分发到副本；写后立即读、状态机决策和强一致校验仍读 Primary 或使用一致性路由。
+
+读写分离会引入延迟、路由、故障摘除和副本容量问题，不是所有查询自动发从库。
+
+### 40. 什么时候需要分库分表？
+
+先做索引、SQL、归档、缓存、读扩展和硬件治理。只有单库写入、容量、DDL/备份窗口或热点长期达到稳定上限，才进入分片。
+
+分片前必须设计 Shard Key、全局 ID、跨分片查询、事务、扩容、数据校验、路由版本和回滚。分片把数据库问题转化为分布式系统问题。
+
+### 41. 分片和迁移容量如何估算？
+
+```text
+base shards >= max(
+  peak write TPS / measured safe TPS per shard,
+  forecast data / safe data per shard
+)
+
+migration time ~= data to copy / effective copy bandwidth
+```
+
+有效带宽要扣除线上流量、校验、重试和限速；双写难以天然一致，常用存量复制 + 增量日志 + 校验 + 灰度切流，并保留回退窗口。
+
+### 深入：什么时候需要分库分表？
+
+**结论先行：**
+分库分表是为了解决单库单表容量、写入吞吐、索引膨胀和维护成本问题，不应过早引入。
+
+**分层展开：**
+
+**触发因素**
+- 单表数据量过大，索引高度和维护成本上升。
+- 写 QPS 接近单库瓶颈。
+- 历史数据和热数据混在一起。
+- DDL、备份、恢复变慢。
+
+**拆分方式**
+- 垂直拆分：按业务域拆库。
+- 水平拆分：按用户 ID、订单 ID、时间等分片。
+- 冷热拆分：热表保近期数据，历史归档。
+
+**代价**
+- 跨分片查询困难。
+- 分布式事务复杂。
+- 全局唯一 ID。
+- 扩容迁移成本高。
+
+**面试追问：分表键怎么选？**
+选择高频查询条件、分布均匀、稳定不变、能减少跨分片访问的字段，例如用户维度业务常用 user_id。
+
+### 深入：分库分表后如何生成全局 ID？
+
+**结论先行：**
+常见方案有雪花算法、号段模式、数据库自增步长、UUID，业务上通常优先雪花或号段。
+
+**分层展开：**
+
+**雪花算法**
+- 时间戳 + 机器 ID + 序列号。
+- 趋势递增，性能高。
+- 依赖时钟，需处理回拨。
+
+**号段模式**
+- 从数据库批量申请 ID 段。
+- 本地内存发号。
+- 性能高且可控。
+
+**UUID**
+- 生成简单。
+- 无序且较长。
+- 不适合作为 InnoDB 主键热点写。
+
+**面试追问：雪花算法时钟回拨怎么办？**
+可短暂等待、切换备用 worker、记录逻辑时钟，严重回拨时拒绝发号并告警。
+
+### 深入：如何做数据迁移和扩容？
+
+**结论先行：**
+数据迁移要保证不停机、可校验、可回滚，常用双写、增量同步、数据校验、灰度切流。
+
+**分层展开：**
+
+**迁移流程**
+- 全量导历史数据。
+- 增量同步新变更。
+- 双写新旧链路。
+- 校验数据一致性。
+- 灰度读新库。
+- 完成切流并保留回滚窗口。
+
+**风险点**
+- 双写失败。
+- 增量乱序。
+- 数据校验成本高。
+- 切流后回滚复杂。
+
+**治理**
+- 操作幂等。
+- 记录迁移状态。
+- 分批执行。
+- 核心指标监控。
+
+**面试追问：双写如何保证一致？**
+双写很难天然强一致，需要本地事务 + outbox、MQ 补偿、定期校验和人工兜底。核心数据切换要谨慎。
+
+## 九、生产治理、安全与 Go 工程实践
+
+### 42. MySQL 监控体系包括什么？
+
+| 层次 | 指标 |
+|---|---|
+| 应用 | QPS、错误、P99、连接池等待、超时 |
+| SQL | Top SQL、扫描/返回行、慢查询、排序、临时表 |
+| 事务锁 | 活跃/长事务、锁等待、死锁、Undo 历史 |
+| 实例 | CPU、内存、Buffer Pool、磁盘、Redo、连接 |
+| 复制 | GTID/位点、Relay、应用延迟、错误和拓扑 |
+| 业务 | 状态成功率、幂等冲突、补偿和对账差异 |
+
+### 43. Online DDL 和 MDL 有什么风险？
+
+Online DDL 仍需要 Metadata Lock。前方长事务可能让 DDL 等待，排队的 DDL 又阻塞后续 DML，形成请求堆积。
+
+上线前确认版本和算法、表大小、磁盘临时空间、主从延迟、长事务和回滚；设置锁等待超时，小流量窗口执行并监控。大表可使用在线变更工具，但触发器、负载和切表同样要评估。
+
+### 44. MySQL 安全如何治理？
+
+- TLS 保护传输，账号按应用和环境隔离。
+- 最小权限，不给业务账号 DDL、文件和管理权限。
+- 凭证轮换并通过密钥系统管理，禁止写入代码和日志。
+- 审计高风险查询、权限变更、导出和删除。
+- 敏感字段加密/脱敏，备份同样加密和控权。
+- 网络隔离、连接来源限制和异常登录告警。
+
+### 45. Go `database/sql` 连接池如何配置？
+
+- `SetMaxOpenConns` 受数据库总连接预算约束。
+- `SetMaxIdleConns` 保留稳定复用但避免大量闲置。
+- `SetConnMaxLifetime` 小于代理/数据库连接回收周期并加抖动。
+- `SetConnMaxIdleTime` 回收长期空闲连接。
+- 监控 `Stats()` 中 InUse、Idle、WaitCount 和 WaitDuration。
+
+池满先查慢 SQL、长事务和泄漏，不直接扩大。多实例连接预算相加后必须低于数据库安全上限。
+
+### 46. Go 如何正确处理超时、事务和结果集？
+
+```go
+ctx, cancel := context.WithTimeout(parent, 800*time.Millisecond)
+defer cancel()
+
+tx, err := db.BeginTx(ctx, nil)
+if err != nil { return err }
+defer tx.Rollback()
+
+// All statements use ctx and tx.
+return tx.Commit()
+```
+
+- 使用 `QueryContext/ExecContext` 传递请求截止时间。
+- `Rows` 必须及时 `Close`，循环后检查 `rows.Err()`。
+- 事务内所有 SQL 必须走 `tx`，不要误用 `db` 逃出事务。
+- `defer Rollback` 作为异常兜底，Commit 成功后 Rollback 无效。
+- 网络超时后的提交结果可能不确定，重试必须有幂等键或状态查询。
+
+### 47. Prepared Statement、批量写和连接泄漏怎么治理？
+
+- 高频稳定 SQL 可使用参数化/预处理，避免拼接注入；注意服务端 Prepared 与连接绑定及缓存规模。
+- 批量 Insert 控制包大小和事务行数，避免超大事务、Redo/Binlog 峰值和复制延迟。
+- 禁止循环单条查询形成 N+1，按 ID 分批查询。
+- 连接泄漏常见于未关闭 Rows、事务未结束和 Context 缺失。
+- 故障重试使用退避和总时限，避免连接风暴。
+
+### 48. 线上故障如何分类排查？
+
+```text
+SQL 慢：计划、扫描、回表、排序、IO
+锁慢：阻塞源、长事务、索引、死锁
+连接慢：池等待、泄漏、慢 SQL、连接风暴
+复制慢：大事务、Applier、资源、DDL
+实例慢：CPU、Buffer Pool、Redo、磁盘、备份
+```
+
+先限制问题接口、暂停低优先级任务、摘除落后副本或终止非核心阻塞事务；保留证据后修复，最后用业务成功率和对账验证恢复。
+
+### 深入：数据库连接池怎么配置？
+
+连接池参数不能直接按照双十一流量拍脑袋设置，核心是根据数据库最大连接数、应用实例数、SQL 平均耗时和数据库 CPU 余量计算。单实例最大连接数通常控制在几十以内，先通过 QPS × 平均响应时间 估算并发，再结合数据库连接预算分配。连接池必须设置获取连接超时、SQL 超时、最大连接生命周期和空闲回收，避免连接池满后请求无限阻塞。大促系统不会靠扩大连接池解决问题，而是通过缓存、限流、MQ 削峰、读写分离和分片保护数据库。
+
+**结论先行：**
+连接池不是越大越好，核心是让应用并发和数据库承载能力匹配，避免连接泄漏、排队过长和慢 SQL 把连接池打满。
+
+**分层展开：**
+
+**关键参数**
+- 最大打开连接数：限制同时打到 MySQL 的连接上限。
+- 最大空闲连接数：减少频繁建连。
+- 连接最大生命周期：避免长连接被网关、LB 或 MySQL 侧异常关闭。
+- 连接空闲时间：回收长时间不用的连接。
+- 获取连接等待时间：避免请求无限阻塞。
+
+**排查指标**
+- 连接池活跃连接数。
+- 等待连接的请求数和等待时间。
+- 慢 SQL 数量。
+- 事务执行时间。
+- MySQL 当前连接数和线程状态。
+
+**面试追问：连接池满了应该加连接吗？**
+不一定。先看是否有慢 SQL、长事务、下游阻塞、连接泄漏或突发流量。盲目加连接可能让 MySQL 并发更高、锁竞争更严重，最终把数据库压垮。
+
+### 补充模块：线上治理与故障排查：发现问题、定位问题、解决问题
+
+> 本模块回答“线上出问题怎么办”。慢 SQL、锁等待、连接池、主从延迟、DDL、CPU/IO 要按现象归类排查。
+
+### 深入：如何优化慢 SQL？
+
+**结论先行：**
+慢 SQL 优化要先看执行计划和数据分布，再从索引、SQL 改写、分页方式、表结构和业务访问模式治理。
+
+**分层展开：**
+
+**定位**
+- 慢查询日志。
+- `EXPLAIN` 或 `EXPLAIN ANALYZE`。
+- 查看扫描行数、回表、排序、临时表。
+
+**优化方向**
+- 建联合索引和覆盖索引。
+- 避免 `select *`。
+- 深分页改为游标或 seek 分页。
+- 拆复杂 SQL。
+- 冷热数据拆分。
+
+**工程治理**
+- 上线前 SQL 审核。
+- 核心 SQL 压测。
+- 慢 SQL 告警。
+- 大表 DDL 走灰度或在线变更工具。
+
+**面试追问：深分页为什么慢？**
+`limit offset, size` 需要扫描并丢弃 offset 行，offset 越大越慢。可以用基于主键或时间的 seek 分页。
+
+### 深入：大表 Online DDL 和 metadata lock 怎么治理？
+
+**结论先行：**
+大表变更最怕长时间锁表、阻塞写入和 metadata lock 堆积。线上变更要评估表大小、DDL 类型、MySQL 版本、业务峰谷、回滚方案和监控告警。
+
+**metadata lock 是什么：**
+MySQL 执行 DDL 时需要拿表的元数据锁。即使 DDL 本身支持 online，如果前面有长事务持有表引用，DDL 可能等待；DDL 一旦排队，又可能阻塞后续 DML，形成雪崩。
+
+**治理方式：**
+
+- 变更前查长事务和慢查询。
+- 低峰期执行。
+- 设置锁等待超时。
+- 大表优先使用 online DDL 能力。
+- 超大表可用 gh-ost / pt-online-schema-change。
+- 分批回填字段，不在 DDL 中做重计算。
+- 灰度发布读写新字段，保留回滚窗口。
+
+**gh-ost / pt-osc 思路：**
+
+- 创建影子表。
+- 在影子表上完成新结构。
+- 增量同步原表变更。
+- 校验后短暂切换表名。
+
+**面试追问：大表加字段为什么危险？**
+危险不只在加字段本身，而在元数据锁、表重建、复制延迟、磁盘 IO、回滚困难和应用代码兼容性。正确做法是先评估 DDL 算法和锁级别，再设计灰度和回滚。
+
+### 深入：MySQL 线上问题排障手册
+
+**结论先行：**
+MySQL 线上排障不是看到告警就统一限流或切主，而是先根据接口、数据库和复制指标判断故障类型，再执行针对性的止血动作。止血的目标是先阻止影响继续扩大，定位和修复则要在业务稳定后继续完成。
+
+**总流程：**
+
+```text
+发现告警 -> 判断影响面 -> 先限流/降级/切读主/暂停任务 -> 定位瓶颈 -> 修复 -> 复盘治理
+```
+
+**总流程如何真正落地？**
+
+**第一步：先确认哪里坏了**
+
+~~~
+应用侧：接口 QPS、成功率、P95/P99、超时、错误码、连接池等待
+MySQL 侧：CPU、内存、磁盘 IO、磁盘空间、网络、活跃连接
+SQL 侧：慢 SQL 数量、TOP SQL、扫描行数、锁等待、临时表、排序
+复制侧：主从延迟、relay log 堆积、IO/SQL 线程状态、复制错误
+变更侧：新功能、新 SQL、新索引、DDL、批处理、定时任务
+~~~
+
+不要只看单个指标。例如 MySQL CPU 飙升但接口 QPS 没涨，可能是执行计划变化或全表扫描；接口 QPS 上涨但 MySQL CPU 平稳，可能主要被缓存或网关吸收。
+
+**第二步：根据现象选择止血动作**
+
+| 现象 | 第一优先级止血动作 | 不要直接做的事 |
+| --- | --- | --- |
+| 新版本上线后慢 SQL 或错误增加 | 暂停发布、回滚应用或关闭功能开关 | 不要先盲目加索引 |
+| 接口 QPS、MySQL CPU、连接数、IO 同时上升 | 网关限流、接口降级、关闭非核心查询、暂停低优先级任务 | 不要直接把连接池调大 |
+| 慢 SQL 占满连接池 | 限制问题接口并发、暂停触发 SQL 的任务、设置超时 | 不要让请求无限等待连接 |
+| 主从延迟大但主库正常 | 核心读切主、暂停读落后从库、摘除异常副本 | 不要继续把强一致读路由到落后从库 |
+| 从库故障或复制中断 | 从读库列表摘除，追平后再接流量 | 不要把未追平从库重新加入读池 |
+| 锁等待大量堆积 | 找阻塞事务，终止非核心长事务，暂停相关批任务 | 不要先扩大连接池 |
+| DDL 或 MDL 排队 | 暂停 DDL，必要时终止非核心长事务 | 不要继续提交更多 DDL |
+| 磁盘空间不足 | 暂停日志和临时表增长源，清理可安全清理的数据并扩容 | 不要直接删除未知用途的数据库文件 |
+
+这里的“限流”通常发生在网关、服务接口或任务消费者侧；“降级”通常是关闭报表、导出、非核心筛选等能力；“切读主”只针对读写分离，不能解决主库自身已经过载的问题。
+
+**第三步：根据现象建立故障假设**
+
+~~~
+接口 QPS 上升 + MySQL CPU/IO 上升：
+  流量超过数据库承载，或新增流量触发了低效 SQL
+
+QPS 基本不变 + 慢 SQL 突增：
+  执行计划变化、统计信息失真、数据分布变化或锁等待
+
+只有某个账号/租户变慢：
+  数据倾斜、热点租户或单个索引范围过大
+
+主库正常 + 从库延迟：
+  大事务、从库应用慢、DDL 或复制线程异常
+
+发布后立即变慢：
+  新 SQL、新索引、参数变化或全量扫描
+~~~
+
+假设必须用指标、执行计划和实际数据验证，不能直接当作结论。
+
+**第四步：按流量、SQL、锁、数据和架构五个方向定位**
+
+1. 流量方向：比较故障前后的接口 QPS、请求参数、接口分布，确认是否某个接口、租户或缓存击穿贡献了主要增量。
+2. SQL 方向：从慢日志或 APM 获取完整 SQL 和真实参数，使用 EXPLAIN，必要时在低风险环境使用 EXPLAIN ANALYZE，对比估算行数和实际扫描行数。
+3. 锁方向：查看阻塞源事务、等待事务、锁定索引、锁模式、锁范围和事务持续时间，确认是否存在长事务、Gap Lock 或 Next-Key Lock。
+4. 数据方向：统计 status、tenant_id、account_id、created_at 的数量分布，确认是否低区分度、热点租户、时间倾斜或统计信息过期。
+5. 架构方向：只有在 SQL、索引、锁和访问模式都合理，但稳定流量仍长期超过单库能力时，才考虑读写分离、分片、归档或存储升级。
+
+常用检查命令：
+
+~~~sql
+show full processlist;
+show index from ad_task;
+analyze table ad_task;
+~~~
+
+锁排查：
+
+~~~sql
+select * from information_schema.innodb_trx;
+select * from performance_schema.data_locks;
+select * from performance_schema.data_lock_waits;
+~~~
+
+数据分布：
+
+~~~sql
+select status, count(*) as cnt
+from ad_task
+where is_deleted = 0
+group by status
+order by cnt desc;
+
+select account_id, count(*) as cnt
+from ad_task
+where is_deleted = 0
+group by account_id
+order by cnt desc
+limit 20;
+
+select date(created_at) as dt, count(*) as cnt
+from ad_task
+group by date(created_at)
+order by dt desc
+limit 30;
+~~~
+
+**第五步：按根因选择修复方式**
+
+~~~
+新 SQL 或索引缺失：
+  修复 SQL，设计匹配查询模式的联合索引
+
+低区分度字段：
+  不只建 status 单列索引，结合账号、租户、时间设计联合索引
+
+热点租户或账号：
+  增加租户/账号过滤，做限流、热点拆分、分片或归档
+
+历史数据拖慢当前查询：
+  增加时间边界，改 seek 分页，冷热拆分和归档
+
+单库容量已经长期到顶：
+  评估读写分离、分库分表、缓存、MQ 和读模型
+~~~
+
+因此，接口 QPS 上升后不能直接判断“要升级存储架构”。正确顺序是：
+
+~~~
+确认流量是否真实增加
+  -> 确认是否缓存击穿
+  -> 确认新增请求是否触发低效 SQL
+  -> 确认是否存在热点或数据倾斜
+  -> 确认单库是否达到稳定容量上限
+  -> 再决定索引、拆分、归档或升级架构
+~~~
+
+**1. 慢 SQL 飙升**
+
+| 排查点 | 看什么 | 处理 |
+| --- | --- | --- |
+| 慢日志 | SQL、耗时、扫描行数、返回行数 | 找 TOP SQL |
+| EXPLAIN | type、key、rows、Extra | 判断索引、回表、排序、临时表 |
+| 数据分布 | 是否热点租户/账号/状态 | 拆 key、加组合索引、冷热拆分 |
+| 访问模式 | 是否新功能全量扫表 | SQL 改写、分页改 seek、异步化 |
+
+**2. 锁等待/死锁**
+
+常见原因：
+- 事务太长。
+- 更新条件没走索引。
+- 多事务加锁顺序不一致。
+- 范围更新触发 gap lock / next-key lock。
+
+处理方式：
+- 先找阻塞源事务，必要时 kill 非核心长事务。
+- 缩短事务边界，不在事务里调用外部接口。
+- 更新条件必须命中索引。
+- 统一资源加锁顺序。
+- 应用层对死锁和锁等待超时做幂等重试。
+
+**3. 连接池耗尽**
+
+不要立刻加连接数，先判断：
+- 是慢 SQL 占住连接？
+- 是事务未提交？
+- 是下游阻塞导致连接长时间不释放？
+- 是突发流量超过 DB 承载？
+- 是连接泄漏？
+
+处理：
+- 限流降级保护 DB。
+- 优化慢 SQL。
+- 设置合理超时。
+- 控制事务耗时。
+- 根据实例数和 DB 最大连接数重新分配连接池。
+
+**4. 主从延迟**
+
+常见原因：
+- 主库大事务。
+- 从库 SQL 重放慢。
+- DDL 或大批量更新。
+- 从库机器配置不足。
+- 复制线程异常。
+
+处理：
+- 核心写后读走主库。
+- 延迟过大时暂停读从或摘除落后从库。
+- 避免大事务，批量任务分片分批。
+- 开启并行复制并优化从库资源。
+- 监控 seconds behind master、relay log 堆积、复制错误。
+
+**5. 大表 DDL 阻塞**
+
+风险：
+- metadata lock 等待。
+- DDL 排队后阻塞后续 DML。
+- 表重建导致 IO 飙升。
+- 主从延迟扩大。
+
+治理：
+- 变更前查长事务。
+- 设置锁等待超时。
+- 低峰执行。
+- 大表用 gh-ost/pt-osc。
+- 先加 nullable 字段，再灰度写入，再回填，再切读。
+
+**6. CPU/IO 飙高**
+
+可能原因：
+- 大量全表扫描。
+- filesort/temporary 暴增。
+- Buffer Pool 命中率下降。
+- redo/binlog 刷盘压力。
+- 临时表落盘。
+- 备份、归档、DDL、报表任务抢资源。
+
+处理：
+- 暂停非核心任务。
+- 限流入口。
+- 优先治理 TOP SQL。
+- 报表迁移到从库/数仓/ES。
+- 大任务分批、错峰、可暂停。
+
+**面试表达：**
+我排查 MySQL 问题不会只说“加索引”。我会先判断是 SQL 慢、锁慢、连接池慢、复制慢还是 IO 慢；先通过限流、降级、读写路由、暂停任务止血，再用慢日志、EXPLAIN、事务/锁视图、连接池指标和主从延迟指标定位，最后做索引、SQL、事务边界、任务拆分和容量治理。
+
+## 十、业务架构与项目实战
+
+### 49. 订单和库存如何保证正确？
+
+- 订单号、支付流水号使用唯一约束保证幂等。
+- 库存用条件更新：`stock >= quantity`，根据影响行数判断成功。
+- 订单、扣减和流水若要求强一致，放在同一短事务。
+- 不在持锁事务中调用支付或库存外部 RPC。
+- 高并发入口可用缓存预扣和消息削峰，但 MySQL 条件更新、流水和对账是最终兜底。
+- 失败通过状态机和补偿恢复，不直接回滚已完成外部副作用。
+
+### 50. MySQL 与消息队列如何保证最终一致？
+
+```text
+本地事务：业务表 + Outbox
+  -> Publisher 可靠投递
+  -> Consumer 幂等处理
+  -> 重试 / 死信
+  -> 状态扫描 / 对账 / 人工修复
+```
+
+“写 DB + 发消息”不是天然原子操作。Outbox 或 CDC 让事件可恢复，但通常仍是至少一次投递，消费端唯一约束、状态机和版本判断不能省略。
+
+### 51. 广告投放工单分配如何设计？
+
+- 工单、分配轮次、团队配额和操作流水建模为明确关系。
+- 业务唯一键防止同一剧目/任务重复进入同轮分配。
+- 通过 Version 乐观锁或条件更新抢占轮次和配额。
+- 冲突有限重试并重新读取，不覆盖其他实例结果。
+- 分配状态与关键流水同事务，通知和报表异步。
+- 联合索引匹配项目、状态、负责人和更新时间列表。
+- 监控冲突率、事务耗时、死锁、分配失败和规则公平性。
+
+### 52. 设备事件消费如何写 MySQL？
+
+- 事件以设备 ID 和事件 ID 幂等，唯一索引防重复。
+- 使用 `INSERT ... ON DUPLICATE KEY UPDATE` 时确认是否真的允许覆盖，并通过 Version 防旧事件回退。
+- 批量写降低 RTT，但限制批次和事务大小。
+- 状态表保存最新值，事件流水异步归档或进入分析系统。
+- 热点设备、索引写放大和主从延迟需要单独监控。
+- 积压恢复按数据库安全写 TPS 限速，不能把消费能力直接压给主库。
+
+### 53. 慢 SQL 项目经历如何表达？
+
+> 我先通过链路和慢日志确定是投放工单列表，而不是泛泛看数据库 CPU；用真实租户参数检查执行计划，发现单列状态索引选择性低，查询还需要按负责人和更新时间过滤排序。随后设计匹配访问路径的联合索引，并把深分页改为基于时间和 ID 的 Seek 分页。上线前用生产量级数据验证扫描行、P99 和索引写入成本，灰度后观察连接池等待和主从延迟。最终不仅降低单次耗时，也减少了高峰连接占用。整个过程体现的是业务查询建模、证据定位和上线治理，而不是一句“加索引”。
+
+### 54. 如何用两分钟回答 MySQL 架构题？
+
+> 我先明确实体关系、权威数据和事务边界，用主键、唯一键和状态机保证基础正确性；再根据高频过滤、排序和分页设计联合索引，并通过执行计划和生产量级压测验证。并发写优先条件更新或乐观锁，必要时使用短悲观事务，外部调用不放在事务内。持久化依赖 Redo、Undo、Binlog 和两阶段提交，高可用按 RPO/RTO 选择复制与切换方案，并通过备份加 Binlog 做 PITR。容量上根据 QPS、延迟、数据增长和索引空间计算连接、存储和分片时点。Go 服务统一 Context 超时、连接池预算、事务封装和幂等重试。线上从 SQL、锁、连接、IO 和复制建立证据链。我的管理经历只帮助风险识别和协作推进，岗位定位仍是负责业务架构和交付的资深后端 IC。
+
+### 补充模块：MySQL 实战设计：会用、用好、知道边界
+
+> 本模块回答“怎么把 MySQL 用到业务设计里”。重点是事务边界、状态机、幂等、条件更新和最终一致。
+
+### 深入：订单系统数据库怎么设计？
+
+**结论先行：**
+订单系统要围绕用户查询、商家查询、状态流转、支付履约、分库分表和一致性补偿设计。
+
+**分层展开：**
+
+**核心表**
+- 订单主表。
+- 订单明细表。
+- 支付单。
+- 履约单。
+- 状态流转表。
+
+**关键设计**
+- 订单号全局唯一。
+- 状态机控制流转。
+- 金额字段用整数分。
+- 幂等号防重复提交。
+
+**查询模型**
+- 用户订单列表。
+- 商家订单列表。
+- 订单详情。
+- 售后和支付查询。
+
+**稳定性**
+- 下单链路短事务。
+- 支付回调幂等。
+- MQ 异步通知。
+- 定时任务补偿。
+
+**面试追问：订单状态为什么要有流转表？**
+主表保存当前状态，流转表保存历史轨迹，方便审计、排障和补偿。
+
+### 深入：如何保证库存扣减正确？
+
+**结论先行：**
+库存扣减要通过条件更新、幂等、事务和补偿保证不超卖；高并发场景可引入 Redis 预扣和异步落库。
+
+**分层展开：**
+
+**数据库方案**
+- `update sku set stock = stock - n where id = ? and stock >= n`。
+- 根据影响行数判断是否成功。
+- 同事务记录扣减流水。
+
+**锁的工程使用**
+
+- 优先使用带条件的原子 UPDATE，让 InnoDB 自动对目标索引记录加 X 锁，并通过影响行数判断扣减是否成功。
+- 必须先查后改时，在同一个显式事务中使用 SELECT ... FOR UPDATE，当前读读取最新已提交版本并持有锁到提交或回滚。
+- 扣库存、创建订单、写扣减流水需要强一致时放在同一个短事务中；不要在持锁事务中调用外部 RPC。
+- 抢具体座位时使用座位唯一索引加条件更新，保证一张座位只能被一个订单抢占。
+- 秒杀入口使用限流、Redis 预扣和 MQ 削峰，MySQL 通过条件更新、唯一索引、幂等订单号和对账补偿做最终兜底。
+- 无论使用 Redis 锁还是数据库锁，最终库存和订单状态都必须由 MySQL 约束和事务保证。
+
+**高并发方案**
+- Redis 预扣库存。
+- MQ 异步落库。
+- 定时对账补偿。
+- 热点商品单独隔离。
+
+**关键风险**
+- 重复扣减。
+- 回滚库存失败。
+- Redis 和 DB 不一致。
+- 活动结束后的对账。
+
+**面试追问：乐观锁版本号和条件扣减怎么选？**
+库存扣减通常条件更新更直接；版本号适合完整对象并发更新，但热点库存频繁冲突时会增加重试成本。
+
+### 深入：MySQL 和 MQ 如何保证最终一致？
+
+**典型场景：**
+知乎统一发布服务中，发布主流程成功后，需要通知下游内容状态、审核、推荐、搜索等系统。如果 DB 更新成功但消息发送失败，就会出现状态不一致。
+
+**可靠方案：**
+- 本地事务同时写业务表和消息表。
+- 后台任务扫描未发送消息并投递 MQ。
+- 消费端用业务唯一键做幂等。
+- 消息发送成功后标记消息表状态。
+- 长时间失败的消息进入告警和人工补偿。
+
+**面试总结：**
+我一般不把“写 DB + 发 MQ”当成天然原子操作，而是用本地消息表或事务消息思想，把不确定性显式建模出来，再用补偿任务保证最终一致。
+
+**结论先行：**
+连接池配置要根据服务实例数、DB 最大连接数、SQL 耗时和峰值 QPS 计算，不能越大越好。
+
+**分层展开：**
+
+**关键参数**
+- 最大打开连接数。
+- 最大空闲连接数。
+- 连接最大生命周期。
+- 空闲连接最大时间。
+
+**配置原则**
+- 总连接数不能打爆 DB。
+- 慢 SQL 会占用连接，导致排队。
+- 连接生命周期要小于数据库或代理超时。
+
+**监控指标**
+- in-use 连接。
+- idle 连接。
+- wait count。
+- wait duration。
+- SQL P99。
+
+**面试追问：连接池满了应该加连接吗？**
+不一定。先看是否有慢 SQL、事务过长、下游阻塞。盲目加连接可能把 DB 压垮。
+
+### 补充模块：项目实战表达：把 MySQL 讲成业务一致性能力
+
+> 本模块用于项目深挖，突出你在广告投放、任务状态、工单分配、事件消费中的数据库设计和治理能力。
+
+### 深入：枫叶互动里哪些数据适合放 MySQL？
+
+**结论先行：**
+在广告投放平台里，MySQL 更适合承载结构化强、需要事务一致性、查询关系明确的数据，比如投放工单、分配规则、绩效统计、轮次状态、配对历史、权限审计等。
+
+**项目例子：投放工单自动分配**
+短剧投放需要把剧目分配给不同投放组，并考虑主投/辅投、轮次、公平性、周末均衡、历史配对等规则。这个场景有明确的实体关系和事务边界，更适合 MySQL。
+
+**表设计思路：**
+- `delivery_work_order`：工单主表。
+- `delivery_group_stat`：投放组统计。
+- `delivery_round_state`：轮次状态。
+- `delivery_pair_history`：历史配对。
+- `delivery_round_log`：分配日志。
+
+**为什么不用 MongoDB？**
+因为这里不是字段频繁变化的半结构化配置，而是强规则、强约束、强一致的业务流程。MySQL 的事务、唯一索引、条件更新和执行计划更适合。
+
+### 深入：投放工单并发分配如何保证一致性？
+
+**业务问题：**
+多个运营人员或自动任务可能同时触发工单分配。如果没有并发控制，可能出现同一剧目重复分配、投放组统计错误、轮次状态错乱。
+
+**方案：**
+- 工单创建和分配统计放在同一个事务里。
+- 对轮次状态或组统计使用 version 乐观锁。
+- 更新时带条件：`where id = ? and version = ?`。
+- 如果 affected rows 为 0，说明发生并发冲突，重新加载最新状态并重试。
+- 重试次数有限，超过后返回业务错误或进入人工处理。
+
+**回答示例：**
+
+```sql
+update delivery_round_state
+set current_round = ?, version = version + 1, updated_at = now()
+where id = ? and version = ?;
+```
+
+**追问：为什么不用悲观锁？**
+如果冲突不高，乐观锁吞吐更好，锁持有时间短。悲观锁适合强冲突、必须串行的场景，但会降低并发能力。投放分配可以接受少量重试，所以用乐观锁更合适。
+
+### 深入：360 事件消费里 `INSERT ... ON DUPLICATE KEY UPDATE` 怎么优化？
+
+**业务背景：**
+家庭防火墙设备会上报上下线、固件版本、App 行为等事件。高峰 QPS 较高，部分数据需要按设备维度更新最新状态。如果每条事件都先查再写，会增加 DB 往返和并发冲突。
+
+**方案：**
+使用唯一键约束设备维度，例如 `device_id + event_type`，写入时使用 upsert：
+
+```sql
+insert into device_event_state(device_id, event_type, event_time, payload, updated_at)
+values (?, ?, ?, ?, now())
+on duplicate key update
+  event_time = values(event_time),
+  payload = values(payload),
+  updated_at = now();
+```
+
+**优化点：**
+- 唯一键设计要精准，避免误合并。
+- 批量写入减少网络往返。
+- 只更新必要字段，避免无意义写放大。
+- 对热点设备或热点事件可先用 MQ 削峰。
+- 如果主库压力高，评估异步落库、分表或冷热分离。
+
+### 深入：MySQL 慢 SQL 如何结合你的项目回答？
+
+**推荐案例：投放工单列表/绩效报表慢查询**
+
+**排查步骤：**
+1. 看慢日志，确认 SQL、耗时、扫描行数、返回行数。
+2. `explain` 看 type、key、rows、Extra。
+3. 判断 where 条件是否符合联合索引最左前缀。
+4. 检查是否存在函数、隐式类型转换、`like '%xx'`、大 offset。
+5. 区分是单条 SQL 问题，还是连接池、锁等待、主库压力问题。
+
+**优化方向：**
+- 工单列表按业务高频筛选设计联合索引，例如状态、负责人、项目、更新时间。
+- 报表类查询尽量走离线/准实时聚合表，不直接扫明细。
+- 大分页改成游标分页或 search_after 类似方案。
+- 对复杂检索需求迁移 ES，MySQL 保留权威数据。
+
